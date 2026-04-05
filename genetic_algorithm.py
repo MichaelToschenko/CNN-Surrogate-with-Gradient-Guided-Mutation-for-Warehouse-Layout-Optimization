@@ -58,14 +58,14 @@ class GeneticAlgorithm:
         self.n_jobs = os.cpu_count() if n_jobs == -1 else n_jobs
 
         self.rng = random.Random(rng_seed)
-        np.random.seed(rng_seed)
 
     # -- Популяция ----------------------------------------------------------
 
     def _init_population(self) -> List[Individual]:
         """Создать начальную случайную популяцию."""
         return [Individual.random_individual(self.m, self.n,
-                                             self.entries, self.exits, self.saves)
+                                             self.entries, self.exits, self.saves,
+                                             rng=self.rng)
                 for _ in range(self.pop_size)]
 
     # -- Отбор --------------------------------------------------------------
@@ -74,8 +74,7 @@ class GeneticAlgorithm:
         """Турнирная селекция с размером турнира k_tournament."""
         contenders = self.rng.sample(population, self.k_tournament)
         return min(contenders,
-                   key=lambda ind: ind.fitness if ind.fitness is not None else float("inf")
-                   ).copy()
+                   key=lambda ind: ind.fitness if ind.fitness is not None else float("inf"))
 
     # -- Скрещивание --------------------------------------------------------
 
@@ -98,8 +97,7 @@ class GeneticAlgorithm:
 
     def _mutate(self, individual: Individual):
         """K случайных перестановок среди не-дорожных ячеек."""
-        coords = [(i, j) for i in range(self.m) for j in range(self.n)
-                  if individual.grid[i, j] != ROAD]
+        coords = [tuple(p) for p in np.argwhere(individual.grid != ROAD)]
         if len(coords) < 2:
             return
         for _ in range(self.K_swaps):
@@ -110,7 +108,7 @@ class GeneticAlgorithm:
 
     # -- Оценка пригодности -------------------------------------------------
 
-    def _evaluate_batch(self, individuals: List[Individual]):
+    def _evaluate_batch(self, individuals: List[Individual], executor):
         """Параллельная оценка пригодности для списка особей."""
         args_list = []
         for ind in individuals:
@@ -120,8 +118,7 @@ class GeneticAlgorithm:
                 entries_arr, exits_arr, saves_arr,
                 self.containers_to_process, self.prob,
             ))
-        with ProcessPoolExecutor(max_workers=self.n_jobs) as executor:
-            metrics = list(executor.map(self._evaluate_fn, args_list))
+        metrics = list(executor.map(self._evaluate_fn, args_list))
         for ind, metric in zip(individuals, metrics):
             ind.fitness = metric
 
@@ -140,59 +137,60 @@ class GeneticAlgorithm:
         population = self._init_population()
         metrics_history = {"avg_ss_dist": [], "avg_local_density": [], "avg_s_to_ex": []}
 
-        if verbose:
-            print("Оценка начальной популяции...")
-        self._evaluate_batch(population)
+        with ProcessPoolExecutor(max_workers=self.n_jobs) as executor:
+            if verbose:
+                print("Оценка начальной популяции...")
+            self._evaluate_batch(population, executor)
 
-        best_overall = min(population, key=lambda ind: ind.fitness)
-        avg_f0 = sum(ind.fitness for ind in population) / len(population)
+            best_overall = min(population, key=lambda ind: ind.fitness)
+            avg_f0 = sum(ind.fitness for ind in population) / len(population)
 
-        history = [{
-            "generation": 0,
-            "best_individual": best_overall,
-            "avg_fitness": avg_f0,
-            "best_overall_fitness": best_overall.fitness,
-        }]
-        self._record_metrics(best_overall, metrics_history)
-
-        if verbose:
-            print(f"Поколение 0: best = {best_overall.fitness}, avg = {avg_f0:.2f}")
-
-        for gen in range(1, self.generations + 1):
-            sorted_pop = sorted(population, key=lambda ind: ind.fitness)
-            elites = [ind.copy() for ind in sorted_pop[:self.elitism_count]]
-
-            children = []
-            while len(elites) + len(children) < self.pop_size:
-                p1 = self._tournament_select(population)
-                p2 = self._tournament_select(population)
-                child = self._crossover(p1, p2)
-                if self.rng.random() < self.pm:
-                    self._mutate(child)
-                children.append(child)
-
-            self._evaluate_batch(children)
-            population = elites + children
-
-            best_in_gen = min(population, key=lambda ind: ind.fitness)
-            if best_in_gen.fitness < best_overall.fitness:
-                best_overall = best_in_gen.copy()
-
-            avg_fitness = sum(ind.fitness for ind in population) / len(population)
-            self._record_metrics(best_in_gen, metrics_history)
-
-            history.append({
-                "generation": gen,
-                "best_individual": best_in_gen,
-                "avg_fitness": avg_fitness,
+            history = [{
+                "generation": 0,
+                "best_individual": best_overall,
+                "avg_fitness": avg_f0,
                 "best_overall_fitness": best_overall.fitness,
-            })
+            }]
+            self._record_metrics(best_overall, metrics_history)
 
             if verbose:
-                print(f"Поколение {gen}: "
-                      f"best = {best_in_gen.fitness}, "
-                      f"avg = {avg_fitness:.2f}, "
-                      f"best_overall = {best_overall.fitness}")
+                print(f"Поколение 0: best = {best_overall.fitness}, avg = {avg_f0:.2f}")
+
+            for gen in range(1, self.generations + 1):
+                sorted_pop = sorted(population, key=lambda ind: ind.fitness)
+                elites = [ind.copy() for ind in sorted_pop[:self.elitism_count]]
+
+                children = []
+                while len(elites) + len(children) < self.pop_size:
+                    p1 = self._tournament_select(population)
+                    p2 = self._tournament_select(population)
+                    child = self._crossover(p1, p2)
+                    if self.rng.random() < self.pm:
+                        self._mutate(child)
+                    children.append(child)
+
+                self._evaluate_batch(children, executor)
+                population = elites + children
+
+                best_in_gen = min(population, key=lambda ind: ind.fitness)
+                if best_in_gen.fitness < best_overall.fitness:
+                    best_overall = best_in_gen.copy()
+
+                avg_fitness = sum(ind.fitness for ind in population) / len(population)
+                self._record_metrics(best_in_gen, metrics_history)
+
+                history.append({
+                    "generation": gen,
+                    "best_individual": best_in_gen,
+                    "avg_fitness": avg_fitness,
+                    "best_overall_fitness": best_overall.fitness,
+                })
+
+                if verbose:
+                    print(f"Поколение {gen}: "
+                          f"best = {best_in_gen.fitness}, "
+                          f"avg = {avg_fitness:.2f}, "
+                          f"best_overall = {best_overall.fitness}")
 
         self._plot_fitness(history)
         self._plot_metrics(metrics_history)

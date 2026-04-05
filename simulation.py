@@ -4,11 +4,9 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 import matplotlib.animation as animation
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
-from IPython.display import HTML
-
-import matplotlib.patches as mpatches
 
 from constants import (
     CMAP, ANIM_LABELS,
@@ -143,6 +141,7 @@ class Dispatcher:
         self.containers: List[Container] = []
         self.prob = prob
         self.free_exits = set(exits)
+        self.saves_by_pos: dict = {s.position: s for s in saves}
         self.containers_to_process = containers_to_process
         self.resulting_metric = 0
         self.rng = rng or random.Random()
@@ -166,9 +165,9 @@ class Dispatcher:
         # выдать команды на выход для сохранённых контейнеров
         for container in self.containers:
             if container.status == ContainerStatus.SAVED and self.rng.random() < self.prob:
-                for save in self.saves:
-                    if save.position == container.position:
-                        save.status = SaveStatus.LOADED_ON
+                save = self.saves_by_pos.get(container.position)
+                if save is not None:
+                    save.status = SaveStatus.LOADED_ON
                 container.status = ContainerStatus.WAITING_EXIT
 
         # породить новые контейнеры в пустых входных ячейках
@@ -217,18 +216,16 @@ class Dispatcher:
             # если робот только что прибыл в хранилище с контейнером — сначала сдать его
             if robot.task == RobotTask.TO_SAVE_WITH:
                 robot.task = RobotTask.IDLE
-                for save in self.saves:
-                    if save.position == robot.position:
-                        save.status = SaveStatus.LOADED_OFF
+                save = self.saves_by_pos.get(robot.position)
+                if save is not None:
+                    save.status = SaveStatus.LOADED_OFF
                 self.containers.append(Container(robot.position, ContainerStatus.SAVED))
 
             if container.status == ContainerStatus.WAITING_SAVE:
                 robot.assign_task(path_to_container, RobotTask.TO_CASE)
                 container.status = ContainerStatus.ASSIGNED_SAVE
             else:
-                path_with_start = self.bfs_path(robot.position, container.position,
-                                                include_start=True)
-                robot.assign_task(path_with_start, RobotTask.TO_SAVE_WITHOUT)
+                robot.assign_task(path_to_container, RobotTask.TO_SAVE_WITHOUT)
                 container.status = ContainerStatus.ASSIGNED_EXIT
 
             idle_robots.remove(robot)
@@ -255,10 +252,7 @@ class Dispatcher:
             save.status = SaveStatus.WAITING
             free_saves.remove(save)
 
-        for c in self.containers:
-            if c.position == robot.position:
-                self.containers.remove(c)
-                break
+        self.containers = [c for c in self.containers if c.position != robot.position]
 
     def _robot_arrived_for_exit(self, robot):
         """Робот прибыл в ячейку с командой на выход — отправить на выход."""
@@ -267,22 +261,18 @@ class Dispatcher:
                                               lambda e: e)
         if exit_pos and path:
             robot.assign_task(path, RobotTask.TO_EXIT)
-            for save in self.saves:
-                if save.position == robot.position:
-                    save.status = SaveStatus.FREE
-                    break
+            save = self.saves_by_pos.get(robot.position)
+            if save is not None:
+                save.status = SaveStatus.FREE
 
-        for c in self.containers:
-            if c.position == robot.position:
-                self.containers.remove(c)
-                break
+        self.containers = [c for c in self.containers if c.position != robot.position]
 
     def _robot_arrived_at_storage(self, robot):
         """Робот прибыл в хранилище с контейнером — сдать контейнер."""
         robot.task = RobotTask.IDLE
-        for save in self.saves:
-            if save.position == robot.position:
-                save.status = SaveStatus.LOADED_OFF
+        save = self.saves_by_pos.get(robot.position)
+        if save is not None:
+            save.status = SaveStatus.LOADED_OFF
         self.containers.append(Container(robot.position, ContainerStatus.SAVED))
 
     def move_robots(self):
@@ -300,6 +290,9 @@ class Dispatcher:
         queue = deque([start])
         visited = {start}
         parent = {start: None}
+        mat = self.grid.matrix
+        blocked = (VIS_CONTAINER_WAIT_SAVE, VIS_CONTAINER_SAVED,
+                   VIS_CONTAINER_WAIT_EXIT)
 
         while queue:
             current = queue.popleft()
@@ -316,9 +309,6 @@ class Dispatcher:
             for dx, dy in directions:
                 nx, ny = x + dx, y + dy
                 neighbor = (nx, ny)
-                mat = self.grid.matrix
-                blocked = (VIS_CONTAINER_WAIT_SAVE, VIS_CONTAINER_SAVED,
-                           VIS_CONTAINER_WAIT_EXIT)
                 if (0 <= nx < rows and 0 <= ny < cols
                         and neighbor not in visited
                         and mat[nx][ny] != VIS_ENTRY
@@ -413,14 +403,11 @@ class Simulator:
 
     def _random_positions(self, count: int, m: int, n: int) -> list:
         """Сгенерировать count уникальных случайных позиций на сетке."""
-        positions = []
-        for _ in range(count):
-            pos = (self.rng.randint(0, m - 1), self.rng.randint(0, n - 1))
-            while pos in self.unique_positions:
-                pos = (self.rng.randint(0, m - 1), self.rng.randint(0, n - 1))
-            positions.append(pos)
-            self.unique_positions.add(pos)
-        return positions
+        available = [(i, j) for i in range(m) for j in range(n)
+                     if (i, j) not in self.unique_positions]
+        selected = self.rng.sample(available, count)
+        self.unique_positions.update(selected)
+        return selected
 
     def run(self):
         """Запустить симуляцию до завершения (без анимации)."""
@@ -431,6 +418,7 @@ class Simulator:
 
     def run_animated(self):
         """Запустить симуляцию с анимацией matplotlib."""
+        from IPython.display import HTML
         self.grid.update(self.robots, self.dispatcher.containers,
                          self.entries, self.exits, self.saves)
         self.grid.draw()

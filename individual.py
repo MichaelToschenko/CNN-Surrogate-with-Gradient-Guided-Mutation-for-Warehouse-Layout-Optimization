@@ -21,12 +21,13 @@ class Individual:
 
     @classmethod
     def random_individual(cls, m: int, n: int,
-                          entries: int, exits: int, saves: int) -> "Individual":
+                          entries: int, exits: int, saves: int,
+                          rng=random) -> "Individual":
         """Создать случайную корректную особь с заданным количеством ячеек каждого типа."""
         assert entries + exits + saves <= m * n, \
             "Сумма типов ячеек превышает размер матрицы"
         arr = np.full((m, n), ROAD, dtype=object)
-        positions = random.sample(
+        positions = rng.sample(
             [(i, j) for i in range(m) for j in range(n)],
             entries + exits + saves,
         )
@@ -43,21 +44,14 @@ class Individual:
 
     def to_position_lists(self) -> Tuple[List[tuple], List[tuple], List[tuple]]:
         """Вернуть (entries, exits, saves) как списки позиций (строка, столбец)."""
-        entries, exits, saves = [], [], []
-        for i in range(self.m):
-            for j in range(self.n):
-                cell = self.grid[i, j]
-                if cell == ENTRY:
-                    entries.append((i, j))
-                elif cell == EXIT:
-                    exits.append((i, j))
-                elif cell == SAVE:
-                    saves.append((i, j))
+        entries = [tuple(p) for p in np.argwhere(self.grid == ENTRY)]
+        exits   = [tuple(p) for p in np.argwhere(self.grid == EXIT)]
+        saves   = [tuple(p) for p in np.argwhere(self.grid == SAVE)]
         return entries, exits, saves
 
     def count_types(self) -> dict:
         """Подсчитать количество ячеек каждого типа."""
-        cnt = Counter(self.grid.flatten())
+        cnt = Counter(self.grid.flat)
         return {k: cnt.get(k, 0) for k in [ROAD, ENTRY, EXIT, SAVE]}
 
     def correct_counts(self, desired_entries: int, desired_exits: int,
@@ -66,29 +60,30 @@ class Individual:
         desired = {ENTRY: desired_entries, EXIT: desired_exits, SAVE: desired_saves}
         cur = self.count_types()
 
-        # убрать избыток не-дорожных ячеек
+        # убрать избыток не-дорожных ячеек (один np.argwhere на тип с избытком)
         for t in NON_ROAD:
             excess = cur[t] - desired[t]
             if excess > 0:
-                positions = [(i, j) for i in range(self.m) for j in range(self.n)
-                             if self.grid[i, j] == t]
-                for i, j in rng.sample(positions, excess):
-                    self.grid[i, j] = ROAD
+                positions = [tuple(p) for p in np.argwhere(self.grid == t)]
+                for idx in rng.sample(positions, excess):
+                    self.grid[idx] = ROAD
                 cur[t] -= excess
                 cur[ROAD] = cur.get(ROAD, 0) + excess
 
-        # заполнить дефицит не-дорожных ячеек из дорожных позиций
-        for t in NON_ROAD:
-            deficit = desired[t] - cur[t]
-            if deficit > 0:
-                road_positions = [(i, j) for i in range(self.m) for j in range(self.n)
-                                  if self.grid[i, j] == ROAD]
-                assert len(road_positions) >= deficit, \
-                    "Не хватает дорожных позиций для коррекции дефицита"
-                for i, j in rng.sample(road_positions, deficit):
-                    self.grid[i, j] = t
-                cur[t] += deficit
-                cur[ROAD] -= deficit
+        # один скан ROAD для всех типов с дефицитом
+        if any(desired[t] - cur[t] > 0 for t in NON_ROAD):
+            road_positions = [tuple(p) for p in np.argwhere(self.grid == ROAD)]
+            for t in NON_ROAD:
+                deficit = desired[t] - cur[t]
+                if deficit > 0:
+                    assert len(road_positions) >= deficit, \
+                        "Не хватает дорожных позиций для коррекции дефицита"
+                    chosen = rng.sample(road_positions, deficit)
+                    for idx in chosen:
+                        self.grid[idx] = t
+                        road_positions.remove(idx)
+                    cur[t] += deficit
+                    cur[ROAD] -= deficit
 
     def plot(self, title: str = None) -> None:
         """Визуализация конфигурации склада в виде цветной сетки с легендой."""
