@@ -37,7 +37,7 @@ class GeneticAlgorithm:
         elitism_count: int = 2,
         pm: float = 0.1,
         K_swaps: int = 5,
-        rng_seed: int = None,
+        rng_seed: int = 42,
         evaluate_fn: Callable = None,
         n_jobs: int = -1,
     ):
@@ -177,7 +177,7 @@ class GeneticAlgorithm:
                     best_overall = best_in_gen.copy()
 
                 avg_fitness = sum(ind.fitness for ind in population) / len(population)
-                self._record_metrics(best_in_gen, metrics_history)
+                self._record_metrics(best_overall, metrics_history)
 
                 history.append({
                     "generation": gen,
@@ -200,14 +200,17 @@ class GeneticAlgorithm:
 
     @staticmethod
     def _plot_fitness(history: list):
-        """График средней пригодности по поколениям."""
+        """График пригодности по поколениям: средняя и лучшая overall."""
         generations = [h["generation"] for h in history]
-        avg_vals    = [h["avg_fitness"]  for h in history]
+        avg_vals    = [h["avg_fitness"]          for h in history]
+        best_vals   = [h["best_overall_fitness"] for h in history]
         plt.figure(figsize=(9, 5))
-        plt.plot(generations, avg_vals, marker="o")
-        plt.title("Средняя пригодность по поколениям")
+        plt.plot(generations, avg_vals,  marker="o", label="Средняя")
+        plt.plot(generations, best_vals, marker="s", label="Лучшая (overall)")
+        plt.title("Пригодность по поколениям")
         plt.xlabel("Поколение")
-        plt.ylabel("Средняя пригодность (fitness)")
+        plt.ylabel("Пригодность (fitness)")
+        plt.legend()
         plt.grid(True)
         plt.show()
 

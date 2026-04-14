@@ -111,7 +111,7 @@ class Individual:
         if title is None:
             title = "Конфигурация склада"
             if self.fitness is not None:
-                title += f"(fitness = {self.fitness})"
+                title += f" (fitness = {self.fitness})"
         ax.set_title(title, fontsize=14, pad=10)
 
         # подзаголовок с размерами и количеством ячеек

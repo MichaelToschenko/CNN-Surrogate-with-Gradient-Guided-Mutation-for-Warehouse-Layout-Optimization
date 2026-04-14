@@ -91,11 +91,11 @@ class Robot:
     """Робот склада, следующий по заранее вычисленному пути на один шаг за такт."""
     position: tuple
     task: RobotTask = RobotTask.IDLE
-    path: list = field(default_factory=list)
+    path: deque = field(default_factory=deque)
 
     def assign_task(self, path: list, task: RobotTask):
         """Назначить новый путь и тип задачи."""
-        self.path = path
+        self.path = deque(path)
         self.task = task
 
     def is_idle(self) -> bool:
@@ -106,7 +106,7 @@ class Robot:
         """Сделать один шаг по пути. Возвращает True при доставке на выход."""
         if not self.path:
             return False
-        self.position = self.path.pop(0)
+        self.position = self.path.popleft()
         if not self.path and self.task == RobotTask.TO_EXIT:
             return True
         return False
@@ -140,7 +140,7 @@ class Dispatcher:
         self.saves = saves
         self.containers: List[Container] = []
         self.prob = prob
-        self.free_exits = set(exits)
+        self.free_exits = exits  # все выходы всегда доступны (capacity не ограничена)
         self.saves_by_pos: dict = {s.position: s for s in saves}
         self.containers_to_process = containers_to_process
         self.resulting_metric = 0
@@ -256,7 +256,7 @@ class Dispatcher:
 
     def _robot_arrived_for_exit(self, robot):
         """Робот прибыл в ячейку с командой на выход — отправить на выход."""
-        exit_list = list(self.free_exits)
+        exit_list = self.free_exits
         exit_pos, path = self._closest_target(robot.position, exit_list,
                                               lambda e: e)
         if exit_pos and path:
@@ -290,9 +290,15 @@ class Dispatcher:
         queue = deque([start])
         visited = {start}
         parent = {start: None}
-        mat = self.grid.matrix
-        blocked = (VIS_CONTAINER_WAIT_SAVE, VIS_CONTAINER_SAVED,
-                   VIS_CONTAINER_WAIT_EXIT)
+        # Логическое состояние вместо визуальной матрицы:
+        # входы блокируют транзитное движение; контейнеры в ожидании блокируют клетку
+        entries_set = set(self.entries)
+        blocked_positions = {
+            c.position for c in self.containers
+            if c.status in (ContainerStatus.WAITING_SAVE,
+                            ContainerStatus.SAVED,
+                            ContainerStatus.WAITING_EXIT)
+        }
 
         while queue:
             current = queue.popleft()
@@ -311,8 +317,8 @@ class Dispatcher:
                 neighbor = (nx, ny)
                 if (0 <= nx < rows and 0 <= ny < cols
                         and neighbor not in visited
-                        and mat[nx][ny] != VIS_ENTRY
-                        and (mat[nx][ny] not in blocked or neighbor == goal)):
+                        and (neighbor not in entries_set or neighbor == goal)
+                        and (neighbor not in blocked_positions or neighbor == goal)):
                     queue.append(neighbor)
                     visited.add(neighbor)
                     parent[neighbor] = current
@@ -409,9 +415,14 @@ class Simulator:
         self.unique_positions.update(selected)
         return selected
 
-    def run(self):
-        """Запустить симуляцию до завершения (без анимации)."""
-        while self.dispatcher.containers_to_process > 0:
+    def run(self, max_steps: int = 100_000):
+        """Запустить симуляцию до завершения (без анимации).
+
+        max_steps — защита от дедлока: если за это число шагов симуляция
+        не завершилась, возвращается текущий (высокий) результат метрики.
+        """
+        while (self.dispatcher.containers_to_process > 0
+               and self.dispatcher.resulting_metric < max_steps):
             self.dispatcher.step()
         self.metric = self.dispatcher.resulting_metric
         self.out = None
@@ -423,7 +434,7 @@ class Simulator:
                          self.entries, self.exits, self.saves)
         self.grid.draw()
         ani = animation.FuncAnimation(
-            self.grid.fig, self._tick, frames=250, interval=5000, repeat=False
+            self.grid.fig, self._tick, frames=250, interval=200, repeat=False
         )
         self.out = HTML(ani.to_jshtml())
         plt.close(self.grid.fig)
@@ -442,7 +453,7 @@ class Simulator:
 
 def evaluate_configuration(args: tuple) -> int:
     """Оценить конфигурацию склада через симуляцию. Вызывается из ProcessPoolExecutor.
-       Вспомогательная функция для распараллеливания"""
+       Фиксированный seed обеспечивает воспроизводимость и честное сравнение геномов."""
     m, n, num_robots, entries_arr, exits_arr, saves_arr, containers_to_process, prob = args
     sim = Simulator(
         m, n, num_robots,
@@ -450,6 +461,7 @@ def evaluate_configuration(args: tuple) -> int:
         containers_to_process, prob,
         are_position_sampled=False,
         entries_arr=entries_arr, exits_arr=exits_arr, saves_arr=saves_arr,
+        rng=random.Random(0),
     )
     sim.run()
     return sim.metric
