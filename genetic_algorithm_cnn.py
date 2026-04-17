@@ -1,17 +1,25 @@
 """
 CNN-управляемый генетический алгоритм для оптимизации конфигурации склада.
 
-Фазы:
-  1. Накопление (поколения 1..n_accumulate): случайная мутация, m_swaps свапов
-     с оценкой fitness после каждого свапа — каждый свап даёт одну чистую запись
-     в replay buffer.
-  2. Обучение WarehouseCNN на накопленных данных (после поколения n_accumulate).
-  3. Инференс+дообучение (поколения n_accumulate+1..generations):
-     CNN-управляемая мутация, те же m_swaps свапов с промежуточными оценками —
-     данные продолжают накапливаться в буфер.
-     Каждые retrain_interval поколений — дообучение.
+Ключевые механизмы (отличия от классического ГА):
+  1. **Surrogate Pre-screening (Oversampling)** — генерируем oversample_factor×
+     больше детей, CNN-суррогат ранжирует их, на дорогую симуляцию отправляем
+     только лучших. Число реальных симуляционных оценок — то же, что у ГА.
+  2. **Relocation Mutation** — вместо свопа двух не-дорожных ячеек, перемещаем
+     ячейку на позицию ROAD. Градиент суррогата показывает, куда лучше
+     переместить. Пространство ~7 400 ходов vs ~325 свопов.
+  3. **Раннее обучение + warm-start** — n_accumulate=5 (не 20), буфер
+     прогревается дополнительными случайными конфигурациями на gen 0.
 
-Честное сравнение с GA: m_swaps CNN-GA = K_swaps обычного ГА.
+Фазы:
+  1. Warm-start (gen 0): оцениваем начальную популяцию + warmstart_extra
+     случайных конфигураций (только для буфера, не в популяцию).
+  2. Накопление (gen 1..n_accumulate): случайная мутация, данные копятся.
+  3. Обучение FitnessSurrogate (регрессия MSE) на gen n_accumulate.
+  4. Инференс+дообучение (gen n_accumulate+1..generations):
+     oversampling с суррогатной фильтрацией + relocation mutation.
+
+Честное сравнение с GA: pop_size, generations, pm, elitism, crossover — те же.
 """
 
 import os
@@ -27,56 +35,77 @@ import torch.nn.functional as F
 
 from constants import ENTRY, EXIT, ROAD, SAVE
 from individual import Individual
+from metrics import (
+    avg_save_to_save_distance,
+    avg_objects_in_radius,
+    avg_save_to_nearest_entry_exit,
+)
 from simulation import evaluate_configuration
 
 
 # ---------------------------------------------------------------------------
-# Кодировка типов ячеек
+# Кодировка типов ячеек: 4 канала
 # ---------------------------------------------------------------------------
 
-CELL_TYPES: List[str] = [ROAD, ENTRY, EXIT, SAVE]  # порядок каналов one-hot
+CELL_TYPES: List[str] = [ROAD, ENTRY, EXIT, SAVE]
 
 
 # ---------------------------------------------------------------------------
-# Архитектура CNN
+# Архитектура CNN-суррогата fitness
 # ---------------------------------------------------------------------------
 
-class WarehouseCNN(nn.Module):
+class FitnessSurrogate(nn.Module):
     """
-    Лёгкая CNN: (B, 4, m, n) → (B, m, n).
+    CNN-суррогат: (B, 4, m, n) → (B,) скалярный fitness.
 
-    Выход p[i,j] ∈ [0,1] — вероятность того, что обмен ячейки (i,j)
-    с другой ячейкой улучшит fitness конфигурации.
+    4-канальный вход (ROAD, ENTRY, EXIT, SAVE).
+    Dilated свёртки расширяют рецептивное поле до 17×17 — покрывает 15×15.
 
-    Архитектура (рецептивное поле 7×7, ~4 000 параметров):
-        Conv(4→16,  3×3) + BN + ReLU
-        Conv(16→16, 3×3) + BN + ReLU
-        Conv(16→8,  3×3) + BN + ReLU
-        Conv(8→1,   1×1) + Sigmoid
+    Архитектура — per-cell scoring + sum:
+        Conv(4→32,  3×3, d=1) + BN + ReLU + Drop    RF:  3
+        Conv(32→32, 3×3, d=1) + BN + ReLU + Drop    RF:  5
+        Conv(32→16, 3×3, d=2) + BN + ReLU + Drop    RF:  9
+        Conv(16→8,  3×3, d=4) + BN + ReLU           RF: 17
+        Per-cell head: Conv(8→16, 1×1) + ReLU + Conv(16→1, 1×1)
+        SUM over spatial dims → scalar fitness (B,)
+
+    Без global pooling: градиент по каждой ячейке — прямой вклад.
+    ~15 000 параметров.
     """
 
-    def __init__(self, m: int, n: int, dropout: float = 0.2) -> None:
+    def __init__(self, m: int, n: int, dropout: float = 0.15) -> None:
         super().__init__()
-        self.m = m
-        self.n = n
-        self.net = nn.Sequential(
-            nn.Conv2d(4,  16, 3, padding=1, bias=False),
+        self.m, self.n = m, n
+        self.features = nn.Sequential(
+            nn.Conv2d(4, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout),
+
+            nn.Conv2d(32, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout),
+
+            nn.Conv2d(32, 16, 3, padding=2, dilation=2, bias=False),
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
             nn.Dropout2d(dropout),
-            nn.Conv2d(16, 16, 3, padding=1, bias=False),
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            nn.Dropout2d(dropout),
-            nn.Conv2d(16,  8, 3, padding=1, bias=False),
+
+            nn.Conv2d(16, 8, 3, padding=4, dilation=4, bias=False),
             nn.BatchNorm2d(8),
             nn.ReLU(inplace=True),
-            nn.Conv2d(8,   1, 1),
-            nn.Sigmoid(),
+        )
+        self.cell_head = nn.Sequential(
+            nn.Conv2d(8, 16, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 1, 1),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze(1)  # (B, m, n)
+        feats = self.features(x)                 # (B, 8, m, n)
+        cell_scores = self.cell_head(feats)      # (B, 1, m, n)
+        return cell_scores.sum(dim=[1, 2, 3])    # (B,)
 
 
 # ---------------------------------------------------------------------------
@@ -85,31 +114,32 @@ class WarehouseCNN(nn.Module):
 
 class CNNGuidedGA:
     """
-    Генетический алгоритм с CNN-управляемой мутацией.
+    Генетический алгоритм с суррогатным oversampling и relocation mutation.
 
     Параметры
     ---------
     m, n               : размер сетки склада
-    entries/exits/saves: количество ячеек каждого типа
-    num_robots         : количество роботов
+    entries/exits/saves : количество ячеек каждого типа
+    num_robots          : количество роботов
     containers_to_process, prob : параметры симуляции
-    pop_size           : размер популяции
-    generations        : число поколений
-    k_tournament       : размер турнира
-    elitism_count      : число элит
-    pm                 : вероятность мутации
-    K_swaps            : K_swaps обычного ГА при сравнении (не используется напрямую,
-                         только для документирования честного сравнения)
-    m_swaps            : число свапов за одну мутацию в обеих фазах
-                         (= K_swaps при честном сравнении)
-    n_accumulate       : поколений фазы накопления (случайная мутация)
-    retrain_interval   : дообучение каждые N поколений после начального обучения
-    n_train_epochs     : эпох за одно обучение
-    min_buffer_size    : минимум записей в буфере для запуска обучения
-    max_buffer_size    : максимальный размер буфера (deque)
-    batch_size         : батч для обучения CNN
-    rng_seed           : seed для воспроизводимости
-    n_jobs             : параллелизм оценки (−1 = cpu_count)
+    pop_size            : размер популяции
+    generations         : число поколений
+    k_tournament        : размер турнира
+    elitism_count       : число элит
+    pm                  : вероятность мутации
+    K_swaps             : K_swaps обычного ГА (для документирования)
+    m_swaps             : число свапов/relocations за одну мутацию (= K_swaps)
+    n_accumulate        : поколений фазы накопления
+    retrain_interval    : дообучение каждые N поколений
+    n_train_epochs      : эпох за одно обучение
+    min_buffer_size     : минимум записей для запуска обучения
+    max_buffer_size     : максимальный размер буфера
+    batch_size          : батч для обучения
+    min_r2              : минимальный R² для использования суррогата
+    oversample_factor   : во сколько раз больше кандидатов генерировать
+    warmstart_extra     : дополнительных случайных конфигураций для буфера на gen 0
+    rng_seed            : seed для воспроизводимости
+    n_jobs              : параллелизм оценки (−1 = cpu_count)
     """
 
     def __init__(
@@ -122,19 +152,22 @@ class CNNGuidedGA:
         num_robots: int,
         containers_to_process: int,
         prob: float,
-        pop_size: int = 40,
+        pop_size: int = 50,
         generations: int = 80,
         k_tournament: int = 3,
         elitism_count: int = 2,
         pm: float = 0.2,
         K_swaps: int = 3,
         m_swaps: Optional[int] = None,
-        n_accumulate: int = 20,
-        retrain_interval: int = 5,
+        n_accumulate: int = 5,
+        retrain_interval: int = 3,
         n_train_epochs: int = 30,
         min_buffer_size: int = 100,
         max_buffer_size: int = 10_000,
         batch_size: int = 32,
+        min_r2: float = 0.1,
+        oversample_factor: int = 3,
+        warmstart_extra: int = 50,
         rng_seed: int = 42,
         n_jobs: int = -1,
     ) -> None:
@@ -154,58 +187,85 @@ class CNNGuidedGA:
         self.K_swaps = K_swaps
         self.m_swaps = m_swaps if m_swaps is not None else K_swaps
 
-        # Параметры CNN
+        # Параметры суррогата
         self.n_accumulate = n_accumulate
         self.retrain_interval = retrain_interval
         self.n_train_epochs = n_train_epochs
         self.min_buffer_size = min_buffer_size
         self.max_buffer_size = max_buffer_size
         self.batch_size = batch_size
+        self.min_r2 = min_r2
+
+        # Параметры oversampling и warm-start
+        self.oversample_factor = oversample_factor
+        self.warmstart_extra = warmstart_extra
 
         self.n_jobs = os.cpu_count() if n_jobs == -1 else n_jobs
 
         # Воспроизводимость
         torch.manual_seed(rng_seed)
         self.rng = random.Random(rng_seed)
-        self.np_rng = np.random.RandomState(rng_seed + 1000)
-
-        # CNN и оптимизатор
-        self.cnn = WarehouseCNN(m, n)
+        # CNN-суррогат и оптимизатор
+        self.surrogate = FitnessSurrogate(m, n)
         self.optimizer = torch.optim.Adam(
-            self.cnn.parameters(), lr=1e-3, weight_decay=1e-4,
+            self.surrogate.parameters(), lr=1e-3, weight_decay=1e-4,
         )
-        self.cnn_trained: bool = False
+        self.surrogate_trained: bool = False
 
-        # Replay buffer: (grid_encoded_tensor, pos_a, pos_b, label)
-        # grid_encoded — (1, 4, m, n) float32; pos — (row, col); label — 0/1
+        # Replay buffer: (grid_encoded_tensor, fitness_value)
         self.buffer: deque = deque(maxlen=max_buffer_size)
 
-    # -----------------------------------------------------------------------
+        # Нормализация fitness
+        self.fit_mean: float = 0.0
+        self.fit_std: float = 1.0
+
+    # -------------------------------------------------------------------
     # Кодировка сетки
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
 
     def _encode_grid(self, grid: np.ndarray) -> torch.Tensor:
-        """One-hot кодирование: (m, n) object-array → (1, 4, m, n) float32 тензор."""
+        """One-hot 4-канальная кодировка: (m, n) → (1, 4, m, n) float32."""
         encoded = np.zeros((4, self.m, self.n), dtype=np.float32)
         for ch, ct in enumerate(CELL_TYPES):
             encoded[ch] = (grid == ct).astype(np.float32)
         return torch.from_numpy(encoded).unsqueeze(0)  # (1, 4, m, n)
 
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
+    # Буфер
+    # -------------------------------------------------------------------
+
+    def _record_to_buffer(self, individuals: List[Individual]) -> None:
+        """Записать оценённых особей в буфер."""
+        for ind in individuals:
+            if ind.fitness is not None:
+                self.buffer.append((self._encode_grid(ind.grid), ind.fitness))
+
+    # -------------------------------------------------------------------
     # Популяция
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
 
     def _init_population(self) -> List[Individual]:
         return [
             Individual.random_individual(
-                self.m, self.n, self.entries, self.exits, self.saves, rng=self.rng
+                self.m, self.n, self.entries, self.exits, self.saves, rng=self.rng,
             )
             for _ in range(self.pop_size)
         ]
 
-    # -----------------------------------------------------------------------
-    # Селекция и скрещивание (идентично GeneticAlgorithm)
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
+    # Пространственные метрики
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _record_metrics(best: Individual, metrics_history: dict) -> None:
+        """Записать пространственные метрики лучшей особи поколения."""
+        metrics_history["avg_ss_dist"].append(avg_save_to_save_distance(best))
+        metrics_history["avg_local_density"].append(avg_objects_in_radius(best, R=3))
+        metrics_history["avg_s_to_ex"].append(avg_save_to_nearest_entry_exit(best))
+
+    # -------------------------------------------------------------------
+    # Селекция и скрещивание (идентично GA)
+    # -------------------------------------------------------------------
 
     def _tournament_select(self, population: List[Individual]) -> Individual:
         contenders = self.rng.sample(population, self.k_tournament)
@@ -228,9 +288,9 @@ class CNNGuidedGA:
         child.correct_counts(self.entries, self.exits, self.saves, rng=self.rng)
         return child
 
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Оценка пригодности
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
 
     def _make_eval_args(self, ind: Individual) -> tuple:
         entries_arr, exits_arr, saves_arr = ind.to_position_lists()
@@ -241,10 +301,8 @@ class CNNGuidedGA:
         )
 
     def _evaluate_batch(
-        self, individuals: List[Individual], executor: ProcessPoolExecutor
+        self, individuals: List[Individual], executor: ProcessPoolExecutor,
     ) -> None:
-        """Параллельная оценка списка особей. evaluate_configuration использует
-        random.Random(0) → детерминированный результат для одной конфигурации."""
         if not individuals:
             return
         args_list = [self._make_eval_args(ind) for ind in individuals]
@@ -252,122 +310,200 @@ class CNNGuidedGA:
         for ind, metric in zip(individuals, metrics):
             ind.fitness = metric
 
-    # -----------------------------------------------------------------------
-    # Мутация: один свап (используется в обеих фазах)
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
+    # Суррогатные предсказания (батчевые)
+    # -------------------------------------------------------------------
 
-    def _single_swap_random(
-        self, individual: Individual
-    ) -> Optional[Tuple[tuple, tuple]]:
-        """Один случайный своп среди не-дорожных ячеек разных типов."""
-        coords = [tuple(p) for p in np.argwhere(individual.grid != ROAD)]
-        if len(coords) < 2:
-            return None
-        pos_a = coords[self.rng.randrange(len(coords))]
-        type_a = individual.grid[pos_a]
-        candidates = [c for c in coords if individual.grid[c] != type_a]
-        if not candidates:
-            return None
-        pos_b = candidates[self.rng.randrange(len(candidates))]
-        individual.grid[pos_a], individual.grid[pos_b] = (
-            individual.grid[pos_b],
-            individual.grid[pos_a],
+    def _surrogate_predict_batch(
+        self, individuals: List[Individual],
+    ) -> np.ndarray:
+        """Предсказать fitness для списка особей через суррогат."""
+        self.surrogate.eval()
+        tensors = torch.cat(
+            [self._encode_grid(ind.grid) for ind in individuals], dim=0,
         )
-        return pos_a, pos_b
-
-    def _single_swap_cnn(
-        self, individual: Individual
-    ) -> Optional[Tuple[tuple, tuple]]:
-        """
-        Один CNN-guided своп между ячейками разных типов.
-
-        CNN применяется к текущей сетке → карта вероятностей p.
-        Первый узел сэмплируется пропорционально p, затем маскируются
-        ячейки того же типа и второй узел выбирается из оставшихся.
-        """
-        coords = [tuple(p) for p in np.argwhere(individual.grid != ROAD)]
-        if len(coords) < 2:
-            return None
-
-        self.cnn.eval()
-        grid_tensor = self._encode_grid(individual.grid)
         with torch.no_grad():
-            p_map: np.ndarray = self.cnn(grid_tensor).squeeze(0).numpy()  # (m, n)
+            preds = self.surrogate(tensors).numpy()
+        # Денормализация
+        return preds * self.fit_std + self.fit_mean
 
-        weights = np.array(
-            [max(float(p_map[c[0], c[1]]), 1e-7) for c in coords],
-            dtype=np.float64,
-        )
-        weights /= weights.sum()
+    # -------------------------------------------------------------------
+    # Мутация: случайный relocation (фаза накопления)
+    # -------------------------------------------------------------------
 
-        # Выбрать первую ячейку
-        idx_a = self.np_rng.choice(len(coords), p=weights)
-        pos_a: tuple = coords[idx_a]
-        type_a = individual.grid[pos_a]
+    def _single_relocate_random(self, individual: Individual) -> None:
+        """Один случайный relocation: не-дорожная ячейка → позиция ROAD."""
+        non_road = [tuple(p) for p in np.argwhere(individual.grid != ROAD)]
+        road_pos = [tuple(p) for p in np.argwhere(individual.grid == ROAD)]
+        if not non_road or not road_pos:
+            return
+        src = non_road[self.rng.randrange(len(non_road))]
+        dst = road_pos[self.rng.randrange(len(road_pos))]
+        individual.grid[dst] = individual.grid[src]
+        individual.grid[src] = ROAD
 
-        # Маска: обнулить веса ячеек того же типа
-        mask = np.array([individual.grid[c] != type_a for c in coords])
-        weights_b = weights * mask
-        if weights_b.sum() == 0:
-            return None
-        weights_b /= weights_b.sum()
+    def _mutate_random(self, individual: Individual) -> None:
+        """m_swaps случайных relocations."""
+        for _ in range(self.m_swaps):
+            self._single_relocate_random(individual)
 
-        idx_b = self.np_rng.choice(len(coords), p=weights_b)
-        pos_b: tuple = coords[idx_b]
+    # -------------------------------------------------------------------
+    # Мутация: gradient-guided relocation
+    # -------------------------------------------------------------------
 
-        individual.grid[pos_a], individual.grid[pos_b] = (
-            individual.grid[pos_b],
-            individual.grid[pos_a],
-        )
-        return pos_a, pos_b
+    def _mutate_relocate(self, individual: Individual) -> int:
+        """
+        Градиентно-направленное перемещение ячеек на позиции ROAD.
 
-    # -----------------------------------------------------------------------
-    # Обучение CNN
-    # -----------------------------------------------------------------------
+        Для каждого из m_swaps шагов:
+          1. Backward pass через суррогат → градиент (4, m, n)
+          2. Для каждой не-дорожной ячейки и каждой road-позиции,
+             оценить score = grad[ch, old] - grad[ch, new]
+             (перемещение из «плохой» в «хорошую» позицию)
+          3. Top-N кандидатов → верификация батчевым forward pass
+          4. Применить лучший ход
 
-    def _augment_buffer(
-        self, data: list
-    ) -> list:
-        """Аугментация ×4 через симметрии сетки (H-flip, V-flip, HV-flip)."""
+        Возвращает число фактически применённых перемещений.
+        """
+        n_applied = 0
+
+        for _ in range(self.m_swaps):
+            non_road_coords = [
+                tuple(p) for p in np.argwhere(individual.grid != ROAD)
+            ]
+            road_coords = [
+                tuple(p) for p in np.argwhere(individual.grid == ROAD)
+            ]
+            if len(non_road_coords) < 1 or len(road_coords) < 1:
+                break
+
+            self.surrogate.eval()
+            grid_tensor = self._encode_grid(individual.grid)
+            grid_tensor = grid_tensor.detach().requires_grad_(True)
+
+            pred_current = self.surrogate(grid_tensor)
+            pred_current.backward()
+
+            grad = grid_tensor.grad.squeeze(0).numpy()  # (4, m, n)
+
+            # --- Быстрое ранжирование через градиент ---
+            # Для перемещения ячейки типа ch из pos_old в pos_new:
+            #   Δf ≈ -grad[ch, old] + grad[road, old] + grad[ch, new] - grad[road, new]
+            #   score = -Δf = (grad[ch, old] - grad[ch, new])
+            #                + (grad[road, new] - grad[road, old])
+            # Положительный score = предсказанное улучшение (уменьшение fitness)
+            candidates: List[Tuple[float, tuple, tuple, str]] = []
+            ch_road = CELL_TYPES.index(ROAD)
+
+            for pos in non_road_coords:
+                cell_type = individual.grid[pos]
+                ch = CELL_TYPES.index(cell_type)
+                g_old_ch = grad[ch, pos[0], pos[1]]
+                g_old_road = grad[ch_road, pos[0], pos[1]]
+
+                for road_pos in road_coords:
+                    g_new_ch = grad[ch, road_pos[0], road_pos[1]]
+                    g_new_road = grad[ch_road, road_pos[0], road_pos[1]]
+                    score = (g_old_ch - g_new_ch) + (g_new_road - g_old_road)
+                    candidates.append((score, pos, road_pos, cell_type))
+
+            if not candidates:
+                break
+
+            # Отобрать top-N по gradient score
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            n_top = min(len(candidates), 30)
+            top_candidates = candidates[:n_top]
+
+            # --- Верификация суррогатом (batched forward) ---
+            base_enc = self._encode_grid(individual.grid)  # (1, 4, m, n)
+            batch = base_enc.expand(n_top, -1, -1, -1).clone()
+
+            for idx, (_, pos_old, pos_new, cell_type) in enumerate(top_candidates):
+                ch = CELL_TYPES.index(cell_type)
+                ch_road = CELL_TYPES.index(ROAD)
+                # Убрать ячейку из старой позиции (стала ROAD)
+                batch[idx, ch, pos_old[0], pos_old[1]] = 0
+                batch[idx, ch_road, pos_old[0], pos_old[1]] = 1
+                # Поставить ячейку в новую позицию
+                batch[idx, ch_road, pos_new[0], pos_new[1]] = 0
+                batch[idx, ch, pos_new[0], pos_new[1]] = 1
+
+            with torch.no_grad():
+                preds_after = self.surrogate(batch).numpy()
+
+            current_pred = pred_current.item()
+
+            # Найти лучший ход по суррогатной верификации
+            best_improvement = -float("inf")
+            best_idx = -1
+            for idx in range(n_top):
+                improvement = current_pred - preds_after[idx]
+                if improvement > best_improvement:
+                    best_improvement = improvement
+                    best_idx = idx
+
+            # Применить лучший ход (даже если improvement <= 0 — исследование)
+            if best_idx >= 0:
+                _, pos_old, pos_new, cell_type = top_candidates[best_idx]
+                individual.grid[pos_old] = ROAD
+                individual.grid[pos_new] = cell_type
+                n_applied += 1
+
+        return n_applied
+
+    # -------------------------------------------------------------------
+    # Адаптивная мутация
+    # -------------------------------------------------------------------
+
+    def _mutate_smart(self, individual: Individual) -> int:
+        """
+        Если суррогат обучен — relocation mutation.
+        Иначе — случайные свопы (фаза накопления).
+        Возвращает число применённых мутаций.
+        """
+        if self.surrogate_trained:
+            return self._mutate_relocate(individual)
+        else:
+            self._mutate_random(individual)
+            return self.m_swaps
+
+    # -------------------------------------------------------------------
+    # Обучение суррогата
+    # -------------------------------------------------------------------
+
+    def _augment_buffer(self, data: list) -> list:
+        """Аугментация ×4 через симметрии (H-flip, V-flip, HV-flip)."""
         augmented = list(data)
-        for grid_enc, pos_a, pos_b, label in data:
-            # grid_enc: (1, 4, m, n)
+        for grid_enc, fitness in data:
             for hflip, vflip in [(True, False), (False, True), (True, True)]:
                 g = grid_enc
-                pa_r, pa_c = pos_a
-                pb_r, pb_c = pos_b
                 if hflip:
-                    g = g.flip(-1)              # flip по столбцам
-                    pa_c = self.n - 1 - pa_c
-                    pb_c = self.n - 1 - pb_c
+                    g = g.flip(-1)
                 if vflip:
-                    g = g.flip(-2)              # flip по строкам
-                    pa_r = self.m - 1 - pa_r
-                    pb_r = self.m - 1 - pb_r
-                augmented.append((g, (pa_r, pa_c), (pb_r, pb_c), label))
+                    g = g.flip(-2)
+                augmented.append((g, fitness))
         return augmented
 
-    def _train_cnn(self) -> List[float]:
+    def _train_surrogate(self) -> Tuple[List[float], float]:
         """
-        Обучить (или дообучить) CNN на текущем replay buffer.
-
-        Функция потерь — BCE только по двум позициям свапа:
-            loss = BCE(p[pos_a], label) + BCE(p[pos_b], label)
-
-        Если буфер меньше min_buffer_size — возвращает [].
+        Обучить/дообучить суррогат на буфере.
+        Возвращает (epoch_losses, r_squared).
         """
         if len(self.buffer) < self.min_buffer_size:
-            return []
+            return [], 0.0
 
-        data = self._augment_buffer(list(self.buffer))
+        data = list(self.buffer)
+
+        # Z-score нормализация fitness
+        fitnesses = np.array([item[1] for item in data], dtype=np.float64)
+        self.fit_mean = float(fitnesses.mean())
+        self.fit_std = float(max(fitnesses.std(), 1.0))
+
+        data = self._augment_buffer(data)
+
         epoch_losses: List[float] = []
-
-        # Динамический pos_weight для компенсации дисбаланса классов
-        n_pos = sum(1 for item in data if item[3] == 1)
-        n_neg = len(data) - n_pos
-        pos_weight = (n_neg / max(n_pos, 1)) ** 0.5
-
-        self.cnn.train()
+        self.surrogate.train()
 
         for _ in range(self.n_train_epochs):
             self.rng.shuffle(data)
@@ -379,31 +515,15 @@ class CNNGuidedGA:
                 if not batch:
                     continue
 
-                # Тензоры батча
-                grids = torch.cat(
-                    [item[0] for item in batch], dim=0
-                )  # (B, 4, m, n)
-                pos_a_list = [item[1] for item in batch]
-                pos_b_list = [item[2] for item in batch]
-                labels = torch.tensor(
-                    [item[3] for item in batch], dtype=torch.float32
-                )  # (B,)
+                grids = torch.cat([item[0] for item in batch], dim=0)
+                targets = torch.tensor(
+                    [(item[1] - self.fit_mean) / self.fit_std for item in batch],
+                    dtype=torch.float32,
+                )
 
                 self.optimizer.zero_grad()
-                p_maps = self.cnn(grids)  # (B, m, n)
-
-                B = len(batch)
-                # Извлекаем значения в позициях двух свапнутых ячеек
-                p_a = torch.stack(
-                    [p_maps[i, pos_a_list[i][0], pos_a_list[i][1]] for i in range(B)]
-                )
-                p_b = torch.stack(
-                    [p_maps[i, pos_b_list[i][0], pos_b_list[i][1]] for i in range(B)]
-                )
-
-                w = torch.where(labels == 1, pos_weight, 1.0)
-                loss = F.binary_cross_entropy(p_a, labels, weight=w) + \
-                    F.binary_cross_entropy(p_b, labels, weight=w)
+                preds = self.surrogate(grids)
+                loss = F.mse_loss(preds, targets)
                 loss.backward()
                 self.optimizer.step()
 
@@ -412,15 +532,32 @@ class CNNGuidedGA:
 
             epoch_losses.append(epoch_loss / max(n_batches, 1))
 
-        self.cnn.eval()
-        return epoch_losses
+        # R² на исходном (неаугментированном) буфере
+        self.surrogate.eval()
+        r_squared = self._compute_r2()
+        return epoch_losses, r_squared
 
-    # -----------------------------------------------------------------------
+    def _compute_r2(self) -> float:
+        """Вычислить R² суррогата на текущем буфере."""
+        if len(self.buffer) < 2:
+            return 0.0
+        with torch.no_grad():
+            grids = torch.cat([item[0] for item in self.buffer], dim=0)
+            targets = torch.tensor(
+                [(item[1] - self.fit_mean) / self.fit_std for item in self.buffer],
+                dtype=torch.float32,
+            )
+            preds = self.surrogate(grids)
+            ss_res = ((preds - targets) ** 2).sum().item()
+            ss_tot = ((targets - targets.mean()) ** 2).sum().item()
+        return 1.0 - ss_res / max(ss_tot, 1e-8)
+
+    # -------------------------------------------------------------------
     # Основной цикл эволюции
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
 
     def run(
-        self, verbose: bool = True
+        self, verbose: bool = True,
     ) -> Tuple[Individual, Dict[str, Any]]:
         """
         Запустить CNN-управляемый ГА.
@@ -428,145 +565,140 @@ class CNNGuidedGA:
         Возвращает
         ----------
         best_individual : Individual
-            Лучшая найденная конфигурация.
-        log : dict со следующими ключами:
-            best_fitness_per_gen         — лучший fitness по поколениям (gen 0..generations)
-            mean_fitness_per_gen         — средний fitness
-            successful_mutation_rate_per_gen — доля успешных мутаций (None для gen 0)
-            cnn_loss_per_epoch           — loss CNN по всем эпохам обучения
+        log : dict
+            best_fitness_per_gen, mean_fitness_per_gen,
+            successful_mutation_rate_per_gen,
+            cnn_loss_per_epoch, surrogate_r2_per_train
         """
         population = self._init_population()
 
         best_fitness_per_gen: List[int] = []
         mean_fitness_per_gen: List[float] = []
-        successful_mutation_rate_per_gen: List[Optional[float]] = []
         cnn_loss_per_epoch: List[float] = []
+        surrogate_r2_per_train: List[float] = []
+        metrics_history = {"avg_ss_dist": [], "avg_local_density": [], "avg_s_to_ex": []}
 
         with ProcessPoolExecutor(max_workers=self.n_jobs) as executor:
 
-            # ----------------------------------------------------------------
-            # Поколение 0: начальная оценка
-            # ----------------------------------------------------------------
+            # ==============================================================
+            # Поколение 0: начальная оценка + warm-start буфера
+            # ==============================================================
             if verbose:
                 print("CNN-GA: оценка начальной популяции...")
             self._evaluate_batch(population, executor)
+            self._record_to_buffer(population)
+
+            # Warm-start: дополнительные случайные конфигурации для буфера
+            if self.warmstart_extra > 0:
+                if verbose:
+                    print(
+                        f"  Warm-start: оценка {self.warmstart_extra} "
+                        f"дополнительных конфигураций для буфера..."
+                    )
+                warmstart = [
+                    Individual.random_individual(
+                        self.m, self.n,
+                        self.entries, self.exits, self.saves,
+                        rng=self.rng,
+                    )
+                    for _ in range(self.warmstart_extra)
+                ]
+                self._evaluate_batch(warmstart, executor)
+                self._record_to_buffer(warmstart)
 
             best_overall = min(population, key=lambda ind: ind.fitness)
             avg_f0 = sum(ind.fitness for ind in population) / len(population)
 
             best_fitness_per_gen.append(best_overall.fitness)
             mean_fitness_per_gen.append(avg_f0)
-            successful_mutation_rate_per_gen.append(None)
+            self._record_metrics(best_overall, metrics_history)
 
             if verbose:
                 print(
-                    f"  Поколение 0: best={best_overall.fitness}, avg={avg_f0:.1f}"
+                    f"  Поколение 0: best={best_overall.fitness}, "
+                    f"avg={avg_f0:.1f}, buf={len(self.buffer)}"
                 )
 
-            # ----------------------------------------------------------------
+            # ==============================================================
             # Основной цикл
-            # ----------------------------------------------------------------
+            # ==============================================================
             for gen in range(1, self.generations + 1):
                 in_accumulation = gen <= self.n_accumulate
+                use_surrogate = (
+                    not in_accumulation and self.surrogate_trained
+                )
                 phase = "Накопление" if in_accumulation else "Инференс "
 
                 sorted_pop = sorted(population, key=lambda ind: ind.fitness)
                 elites = [ind.copy() for ind in sorted_pop[: self.elitism_count]]
 
-                # ---- Генерация детей с пометкой тех, кто будет мутировать --
-                children: List[Individual] = []
-                to_mutate_idx: List[int] = []  # индексы в children
+                n_needed = self.pop_size - self.elitism_count
 
-                while len(elites) + len(children) < self.pop_size:
+                # -- Генерация кандидатов ----------------------------------
+                if use_surrogate:
+                    n_generate = n_needed * self.oversample_factor
+                else:
+                    n_generate = n_needed
+
+                all_children: List[Individual] = []
+
+                for _ in range(n_generate):
                     p1 = self._tournament_select(population)
                     p2 = self._tournament_select(population)
                     child = self._crossover(p1, p2)
                     if self.rng.random() < self.pm:
-                        to_mutate_idx.append(len(children))
-                    children.append(child)
+                        self._mutate_smart(child)
+                    all_children.append(child)
 
-                # ---- Разделяем детей на мутируемых и нет ------------------
-                to_mutate_set = set(to_mutate_idx)
-                mutated   = [children[i] for i in to_mutate_idx]
-                untouched = [children[i] for i in range(len(children))
-                             if i not in to_mutate_set]
+                # -- Суррогатная фильтрация --------------------------------
+                if use_surrogate and len(all_children) > n_needed:
+                    predicted = self._surrogate_predict_batch(all_children)
+                    top_indices = np.argsort(predicted)[:n_needed]
+                    children = [all_children[i] for i in top_indices]
+                else:
+                    children = all_children
 
-                # Немутируемые оцениваем один раз
-                self._evaluate_batch(untouched, executor)
+                # -- Оценка через симуляцию --------------------------------
+                self._evaluate_batch(children, executor)
+                self._record_to_buffer(children)
 
-                # Начальная оценка мутируемых (перед первым свапом)
-                self._evaluate_batch(mutated, executor)
-
-                # ---- m_swaps последовательных свапов с оценкой после каждого
-                n_successful = 0
-                n_swap_records = 0
-
-                for _ in range(self.m_swaps):
-                    # Запоминаем состояние ДО этого свапа
-                    pre_states = [
-                        (self._encode_grid(c.grid), c.fitness) for c in mutated
-                    ]
-
-                    # Применяем по одному свапу к каждому мутируемому ребёнку
-                    swaps = []
-                    for child in mutated:
-                        if in_accumulation or not self.cnn_trained:
-                            swap = self._single_swap_random(child)
-                        else:
-                            swap = self._single_swap_cnn(child)
-                        swaps.append(swap)
-
-                    # Оцениваем после свапа
-                    self._evaluate_batch(mutated, executor)
-
-                    # Записываем в буфер — одна чистая запись на свап
-                    for child, swap, (pre_enc, pre_fit) in zip(
-                        mutated, swaps, pre_states
-                    ):
-                        if swap is None:
-                            continue
-                        label = 1 if child.fitness < pre_fit else 0
-                        n_successful += label
-                        n_swap_records += 1
-                        self.buffer.append((pre_enc, swap[0], swap[1], label))
-
-                mut_rate: Optional[float] = (
-                    n_successful / n_swap_records if n_swap_records > 0 else None
-                )
-                successful_mutation_rate_per_gen.append(mut_rate)
-
-                # ---- Обновление популяции ----------------------------------
+                # -- Обновление популяции ----------------------------------
                 population = elites + children
 
                 best_in_gen = min(population, key=lambda ind: ind.fitness)
                 if best_in_gen.fitness < best_overall.fitness:
                     best_overall = best_in_gen.copy()
 
-                avg_fitness = sum(ind.fitness for ind in population) / len(population)
+                avg_fitness = sum(ind.fitness for ind in population) / len(
+                    population
+                )
                 best_fitness_per_gen.append(best_overall.fitness)
                 mean_fitness_per_gen.append(avg_fitness)
+                self._record_metrics(best_in_gen, metrics_history)
 
-                # ---- Обучение CNN ------------------------------------------
+                # -- Обучение суррогата ------------------------------------
                 if gen == self.n_accumulate:
                     if verbose:
                         print(
-                            f"  [Обучение CNN] buffer={len(self.buffer)} записей..."
+                            f"  [Обучение суррогата] buffer={len(self.buffer)}..."
                         )
-                    losses = self._train_cnn()
+                    losses, r2 = self._train_surrogate()
                     cnn_loss_per_epoch.extend(losses)
                     if losses:
-                        self.cnn_trained = True
-                        if verbose:
-                            print(
-                                f"  CNN обучена: {len(losses)} эпох, "
-                                f"последний loss={losses[-1]:.4f}"
-                            )
-                    else:
-                        if verbose:
-                            print(
-                                "  Буфер слишком мал для обучения — "
-                                "продолжаем случайную мутацию."
-                            )
+                        surrogate_r2_per_train.append(r2)
+                        if r2 >= self.min_r2:
+                            self.surrogate_trained = True
+                            if verbose:
+                                print(
+                                    f"  Суррогат обучен: {len(losses)} эпох, "
+                                    f"loss={losses[-1]:.4f}, R²={r2:.3f}"
+                                )
+                        else:
+                            if verbose:
+                                print(
+                                    f"  R²={r2:.3f} < {self.min_r2} — "
+                                    f"продолжаем случайную мутацию."
+                                )
 
                 elif (
                     not in_accumulation
@@ -574,31 +706,37 @@ class CNNGuidedGA:
                 ):
                     if verbose:
                         print(
-                            f"  [Дообучение CNN] поколение {gen}, "
+                            f"  [Дообучение суррогата] gen {gen}, "
                             f"buffer={len(self.buffer)}..."
                         )
-                    losses = self._train_cnn()
+                    losses, r2 = self._train_surrogate()
                     cnn_loss_per_epoch.extend(losses)
-                    if losses and not self.cnn_trained:
-                        self.cnn_trained = True
+                    if losses:
+                        surrogate_r2_per_train.append(r2)
+                        if r2 >= self.min_r2 and not self.surrogate_trained:
+                            self.surrogate_trained = True
+                        if verbose:
+                            print(
+                                f"  Дообучение: loss={losses[-1]:.4f}, "
+                                f"R²={r2:.3f}"
+                            )
 
-                # ---- Вывод прогресса ---------------------------------------
+                # -- Вывод прогресса ---------------------------------------
                 if verbose:
-                    mut_str = (
-                        f"mut_ok={mut_rate:.1%}" if mut_rate is not None else "no mut"
-                    )
+                    surr_str = "surr" if use_surrogate else "rand"
                     print(
                         f"  [{phase}] gen {gen:3d}: "
                         f"best_overall={best_overall.fitness:7d}, "
                         f"avg={avg_fitness:8.1f}, "
-                        f"{mut_str}, "
-                        f"buf={len(self.buffer)}"
+                        f"buf={len(self.buffer)}, "
+                        f"{surr_str}"
                     )
 
         log: Dict[str, Any] = {
             "best_fitness_per_gen": best_fitness_per_gen,
             "mean_fitness_per_gen": mean_fitness_per_gen,
-            "successful_mutation_rate_per_gen": successful_mutation_rate_per_gen,
             "cnn_loss_per_epoch": cnn_loss_per_epoch,
+            "surrogate_r2_per_train": surrogate_r2_per_train,
+            **metrics_history,
         }
         return best_overall, log

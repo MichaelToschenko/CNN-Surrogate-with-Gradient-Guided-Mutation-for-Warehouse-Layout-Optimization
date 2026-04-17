@@ -1,2 +1,4 @@
 .diploma_venv/
 __pycache__/
+logs/
+plots/

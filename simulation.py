@@ -150,12 +150,13 @@ class Dispatcher:
         """Выполнить один такт симуляции."""
         self.generate_containers()
         self.assign_tasks()
+        was_processing = self.containers_to_process > 0
         self.move_robots()
         if plot:
             self.grid.update(self.robots, self.containers,
                              self.entries, self.exits, self.saves)
             self.grid.refresh()
-        if self.containers_to_process > 0:
+        if was_processing:
             self.resulting_metric += 1
 
     def generate_containers(self):
@@ -179,6 +180,12 @@ class Dispatcher:
 
     def assign_tasks(self):
         """Назначить все ожидающие задачи доступным роботам."""
+        free_saves = [s for s in self.saves if s.status == SaveStatus.FREE]
+
+        # Сначала обработать прибывших роботов (финализация доставок)
+        self._handle_arrived_robots(free_saves)
+
+        # Пересобрать списки после обработки прибывших
         idle_robots = [
             r for r in self.robots
             if r.is_idle() and r.task not in (RobotTask.TO_CASE, RobotTask.TO_SAVE_WITHOUT)
@@ -187,7 +194,6 @@ class Dispatcher:
             r for r in self.robots
             if r.is_idle() and r.task == RobotTask.TO_CASE
         ]
-        free_saves = [s for s in self.saves if s.status == SaveStatus.FREE]
         waiting_containers = [
             c for c in self.containers
             if c.status in (ContainerStatus.WAITING_SAVE, ContainerStatus.WAITING_EXIT)
@@ -195,7 +201,6 @@ class Dispatcher:
 
         self._dispatch_to_containers(idle_robots, robots_at_entry,
                                      free_saves, waiting_containers)
-        self._handle_arrived_robots(free_saves)
 
     def _dispatch_to_containers(self, idle_robots, robots_at_entry,
                                 free_saves, waiting_containers):
@@ -212,14 +217,6 @@ class Dispatcher:
             robot, path_to_container = self._closest_robot(idle_robots, container.position)
             if robot is None:
                 continue
-
-            # если робот только что прибыл в хранилище с контейнером — сначала сдать его
-            if robot.task == RobotTask.TO_SAVE_WITH:
-                robot.task = RobotTask.IDLE
-                save = self.saves_by_pos.get(robot.position)
-                if save is not None:
-                    save.status = SaveStatus.LOADED_OFF
-                self.containers.append(Container(robot.position, ContainerStatus.SAVED))
 
             if container.status == ContainerStatus.WAITING_SAVE:
                 robot.assign_task(path_to_container, RobotTask.TO_CASE)
@@ -251,8 +248,7 @@ class Dispatcher:
             robot.assign_task(path, RobotTask.TO_SAVE_WITH)
             save.status = SaveStatus.WAITING
             free_saves.remove(save)
-
-        self.containers = [c for c in self.containers if c.position != robot.position]
+            self.containers = [c for c in self.containers if c.position != robot.position]
 
     def _robot_arrived_for_exit(self, robot):
         """Робот прибыл в ячейку с командой на выход — отправить на выход."""
@@ -264,8 +260,7 @@ class Dispatcher:
             save = self.saves_by_pos.get(robot.position)
             if save is not None:
                 save.status = SaveStatus.FREE
-
-        self.containers = [c for c in self.containers if c.position != robot.position]
+            self.containers = [c for c in self.containers if c.position != robot.position]
 
     def _robot_arrived_at_storage(self, robot):
         """Робот прибыл в хранилище с контейнером — сдать контейнер."""

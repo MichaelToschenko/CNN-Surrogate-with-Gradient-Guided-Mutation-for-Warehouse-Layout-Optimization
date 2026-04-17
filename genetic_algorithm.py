@@ -177,7 +177,7 @@ class GeneticAlgorithm:
                     best_overall = best_in_gen.copy()
 
                 avg_fitness = sum(ind.fitness for ind in population) / len(population)
-                self._record_metrics(best_overall, metrics_history)
+                self._record_metrics(best_in_gen, metrics_history)
 
                 history.append({
                     "generation": gen,
