@@ -12,7 +12,7 @@ from constants import (ROAD, ENTRY, EXIT, SAVE, NON_ROAD,
 
 
 class Individual:
-    """Сетка m*n из меток типов ячеек, представляющая одну конфигурацию склада."""
+    """An m*n grid of cell-type labels representing a single warehouse configuration."""
 
     def __init__(self, grid_array: np.ndarray, fitness: int = None):
         self.grid = grid_array.copy()
@@ -23,9 +23,9 @@ class Individual:
     def random_individual(cls, m: int, n: int,
                           entries: int, exits: int, saves: int,
                           rng=random) -> "Individual":
-        """Создать случайную корректную особь с заданным количеством ячеек каждого типа."""
+        """Create a random valid individual with the requested cell-type counts."""
         assert entries + exits + saves <= m * n, \
-            "Сумма типов ячеек превышает размер матрицы"
+            "Sum of cell types exceeds matrix size"
         arr = np.full((m, n), ROAD, dtype=object)
         positions = rng.sample(
             [(i, j) for i in range(m) for j in range(n)],
@@ -39,28 +39,28 @@ class Individual:
         return cls(arr)
 
     def copy(self) -> "Individual":
-        """Глубокая копия особи."""
+        """Deep copy of the individual."""
         return Individual(self.grid.copy(), self.fitness)
 
     def to_position_lists(self) -> Tuple[List[tuple], List[tuple], List[tuple]]:
-        """Вернуть (entries, exits, saves) как списки позиций (строка, столбец)."""
+        """Return (entries, exits, saves) as lists of (row, col) positions."""
         entries = [tuple(p) for p in np.argwhere(self.grid == ENTRY)]
         exits   = [tuple(p) for p in np.argwhere(self.grid == EXIT)]
         saves   = [tuple(p) for p in np.argwhere(self.grid == SAVE)]
         return entries, exits, saves
 
     def count_types(self) -> dict:
-        """Подсчитать количество ячеек каждого типа."""
+        """Count cells of each type."""
         cnt = Counter(self.grid.flat)
         return {k: cnt.get(k, 0) for k in [ROAD, ENTRY, EXIT, SAVE]}
 
     def correct_counts(self, desired_entries: int, desired_exits: int,
                        desired_saves: int, rng=random):
-        """Восстановить точное количество типов ячеек после скрещивания."""
+        """Restore exact cell-type counts after crossover."""
         desired = {ENTRY: desired_entries, EXIT: desired_exits, SAVE: desired_saves}
         cur = self.count_types()
 
-        # убрать избыток не-дорожных ячеек (один np.argwhere на тип с избытком)
+        # remove excess non-road cells (one np.argwhere per surplus type)
         for t in NON_ROAD:
             excess = cur[t] - desired[t]
             if excess > 0:
@@ -70,14 +70,14 @@ class Individual:
                 cur[t] -= excess
                 cur[ROAD] = cur.get(ROAD, 0) + excess
 
-        # один скан ROAD для всех типов с дефицитом
+        # one ROAD scan covers all deficient types
         if any(desired[t] - cur[t] > 0 for t in NON_ROAD):
             road_positions = [tuple(p) for p in np.argwhere(self.grid == ROAD)]
             for t in NON_ROAD:
                 deficit = desired[t] - cur[t]
                 if deficit > 0:
                     assert len(road_positions) >= deficit, \
-                        "Не хватает дорожных позиций для коррекции дефицита"
+                        "Not enough road positions to cover the deficit"
                     chosen = rng.sample(road_positions, deficit)
                     for idx in chosen:
                         self.grid[idx] = t
@@ -86,7 +86,7 @@ class Individual:
                     cur[ROAD] -= deficit
 
     def plot(self, title: str = None) -> None:
-        """Визуализация конфигурации склада в виде цветной сетки с легендой."""
+        """Visualize the warehouse configuration as a colored grid with a legend."""
         numeric = np.vectorize(CONFIG_CELL_TO_IDX.get)(self.grid)
 
         fig, ax = plt.subplots(figsize=(8, 8))
@@ -101,27 +101,26 @@ class Individual:
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-        # легенда
+        # legend
         patches = [mpatches.Patch(color=CONFIG_COLORS[t], label=CONFIG_LABELS[t])
                    for t in (ROAD, ENTRY, EXIT, SAVE)]
         ax.legend(handles=patches, loc="upper left", bbox_to_anchor=(1.02, 1),
                   fontsize=11, frameon=True)
 
-        # заголовок
+        # title
         if title is None:
-            title = "Конфигурация склада"
+            title = "Warehouse configuration"
             if self.fitness is not None:
                 title += f" (fitness = {self.fitness})"
         ax.set_title(title, fontsize=14, pad=10)
 
-        # подзаголовок с размерами и количеством ячеек
+        # subtitle with dimensions and cell counts
         counts = self.count_types()
         subtitle = (f"{self.m}×{self.n}  |  "
-                    f"Входов: {counts[ENTRY]}, "
-                    f"Выходов: {counts[EXIT]}, "
-                    f"Хранилищ: {counts[SAVE]}")
+                    f"Entries: {counts[ENTRY]}, "
+                    f"Exits: {counts[EXIT]}, "
+                    f"Storage: {counts[SAVE]}")
         ax.set_xlabel(subtitle, fontsize=11)
 
         plt.tight_layout()
         plt.show()
-

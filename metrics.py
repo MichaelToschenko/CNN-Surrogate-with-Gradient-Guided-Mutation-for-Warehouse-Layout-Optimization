@@ -7,12 +7,12 @@ if TYPE_CHECKING:
 
 
 def manhattan(a: tuple, b: tuple) -> int:
-    """Манхэттенское расстояние между двумя позициями."""
+    """Manhattan distance between two positions."""
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
 def avg_save_to_save_distance(ind: "Individual") -> float:
-    """Среднее попарное манхэттенское расстояние между ячейками хранения."""
+    """Average pairwise Manhattan distance between storage cells."""
     _, _, saves = ind.to_position_lists()
     if len(saves) < 2:
         return 0.0
@@ -23,7 +23,7 @@ def avg_save_to_save_distance(ind: "Individual") -> float:
 
 
 def avg_objects_in_radius(ind: "Individual", R: int = 3) -> float:
-    """Среднее количество не-дорожных объектов в радиусе R от каждой ячейки хранения."""
+    """Average number of non-road objects within radius R of each storage cell."""
     entries, exits, saves = ind.to_position_lists()
     objects = entries + exits + saves
     if not saves:
@@ -36,7 +36,7 @@ def avg_objects_in_radius(ind: "Individual", R: int = 3) -> float:
 
 
 def avg_save_to_nearest_entry_exit(ind: "Individual") -> float:
-    """Среднее расстояние от ячейки хранения до ближайшего входа или выхода."""
+    """Average distance from a storage cell to the nearest entry or exit."""
     entries, exits, saves = ind.to_position_lists()
     targets = entries + exits
     if not saves or not targets:

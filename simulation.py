@@ -18,7 +18,7 @@ from constants import (
 
 
 class Grid:
-    """Отрисовка матрицы склада m*n и обновление кадров анимации."""
+    """Renders the m*n warehouse matrix and updates animation frames."""
 
     def __init__(self, m: int, n: int):
         self.m = m
@@ -27,7 +27,7 @@ class Grid:
         self.mesh = None
 
     def update(self, robots, containers, entries, exits, saves):
-        """Перерисовать все объекты для текущего кадра."""
+        """Redraw all objects for the current frame."""
         self.matrix.fill(VIS_ROAD)
         for pos in entries:
             self.matrix[pos] = VIS_ENTRY
@@ -51,7 +51,7 @@ class Grid:
                 self.matrix[robot.position] = VIS_ROBOT_TO_EXIT
 
     def draw(self):
-        """Создать фигуру и imshow для анимации."""
+        """Create the figure and pcolormesh for animation."""
         self.fig, self.ax = plt.subplots(figsize=(8, 8))
         self.mesh = self.ax.pcolormesh(
             self.matrix, cmap=CMAP, vmin=0, vmax=10,
@@ -66,7 +66,7 @@ class Grid:
         for spine in self.ax.spines.values():
             spine.set_visible(False)
 
-        # легенда
+        # legend
         used = [VIS_ROAD, VIS_ENTRY, VIS_EXIT, VIS_SAVE,
                 VIS_ROBOT_IDLE, VIS_ROBOT_TO_SAVE, VIS_ROBOT_TO_EXIT,
                 VIS_CONTAINER_WAIT_SAVE, VIS_CONTAINER_SAVED,
@@ -76,11 +76,11 @@ class Grid:
         self.ax.legend(handles=patches, loc="upper left", bbox_to_anchor=(1.02, 1),
                        fontsize=9, frameon=True)
 
-        self.ax.set_title("Симуляция работы склада", fontsize=14, pad=10)
+        self.ax.set_title("Warehouse simulation", fontsize=14, pad=10)
         self.fig.tight_layout()
 
     def refresh(self):
-        """Передать обновлённую матрицу в отображаемое изображение."""
+        """Push the updated matrix to the displayed image."""
         if self.mesh is not None:
             self.mesh.set_array(self.matrix.ravel())
         plt.draw()
@@ -88,22 +88,22 @@ class Grid:
 
 @dataclass
 class Robot:
-    """Робот склада, следующий по заранее вычисленному пути на один шаг за такт."""
+    """Warehouse robot that follows a precomputed path one step per tick."""
     position: tuple
     task: RobotTask = RobotTask.IDLE
     path: deque = field(default_factory=deque)
 
     def assign_task(self, path: list, task: RobotTask):
-        """Назначить новый путь и тип задачи."""
+        """Assign a new path and task type."""
         self.path = deque(path)
         self.task = task
 
     def is_idle(self) -> bool:
-        """Вернуть True, если у робота не осталось шагов пути."""
+        """Return True if the robot has no remaining path steps."""
         return not self.path
 
     def move(self) -> bool:
-        """Сделать один шаг по пути. Возвращает True при доставке на выход."""
+        """Advance one step along the path. Returns True on delivery to an exit."""
         if not self.path:
             return False
         self.position = self.path.popleft()
@@ -114,20 +114,20 @@ class Robot:
 
 @dataclass
 class Container:
-    """Контейнер с позицией и статусом жизненного цикла."""
+    """Container with a position and lifecycle status."""
     position: tuple
     status: ContainerStatus
 
 
 @dataclass
 class Save:
-    """Ячейка хранения и её состояние занятости."""
+    """Storage cell and its occupancy status."""
     position: tuple
     status: SaveStatus
 
 
 class Dispatcher:
-    """Логика одного такта: генерация контейнеров, назначение задач, движение роботов."""
+    """One-tick logic: container generation, task assignment, robot movement."""
 
     def __init__(self, grid: Grid, robots: List[Robot],
                  entries: list, exits: list, saves: List[Save],
@@ -140,14 +140,14 @@ class Dispatcher:
         self.saves = saves
         self.containers: List[Container] = []
         self.prob = prob
-        self.free_exits = exits  # все выходы всегда доступны (capacity не ограничена)
+        self.free_exits = exits  # all exits are always available (no capacity limit)
         self.saves_by_pos: dict = {s.position: s for s in saves}
         self.containers_to_process = containers_to_process
         self.resulting_metric = 0
         self.rng = rng or random.Random()
 
     def step(self, plot: bool = False):
-        """Выполнить один такт симуляции."""
+        """Run one simulation tick."""
         self.generate_containers()
         self.assign_tasks()
         was_processing = self.containers_to_process > 0
@@ -160,10 +160,10 @@ class Dispatcher:
             self.resulting_metric += 1
 
     def generate_containers(self):
-        """Стохастически порождать контейнеры во входах и выдавать команды на выход."""
+        """Stochastically spawn containers at entries and issue exit commands."""
         occupied_entries = {c.position for c in self.containers}
 
-        # выдать команды на выход для сохранённых контейнеров
+        # issue exit commands for stored containers
         for container in self.containers:
             if container.status == ContainerStatus.SAVED and self.rng.random() < self.prob:
                 save = self.saves_by_pos.get(container.position)
@@ -171,7 +171,7 @@ class Dispatcher:
                     save.status = SaveStatus.LOADED_ON
                 container.status = ContainerStatus.WAITING_EXIT
 
-        # породить новые контейнеры в пустых входных ячейках
+        # spawn new containers in empty entry cells
         for entry in self.entries:
             if entry not in occupied_entries and self.rng.random() < self.prob:
                 self.containers.append(
@@ -179,13 +179,13 @@ class Dispatcher:
                 )
 
     def assign_tasks(self):
-        """Назначить все ожидающие задачи доступным роботам."""
+        """Assign all pending tasks to available robots."""
         free_saves = [s for s in self.saves if s.status == SaveStatus.FREE]
 
-        # Сначала обработать прибывших роботов (финализация доставок)
+        # First handle robots that have arrived (finalize deliveries)
         self._handle_arrived_robots(free_saves)
 
-        # Пересобрать списки после обработки прибывших
+        # Rebuild lists after handling arrivals
         idle_robots = [
             r for r in self.robots
             if r.is_idle() and r.task not in (RobotTask.TO_CASE, RobotTask.TO_SAVE_WITHOUT)
@@ -204,7 +204,7 @@ class Dispatcher:
 
     def _dispatch_to_containers(self, idle_robots, robots_at_entry,
                                 free_saves, waiting_containers):
-        """Для каждого необработанного контейнера найти и назначить ближайшего робота."""
+        """For each unhandled container, find and assign the closest robot."""
         for container in waiting_containers:
             if container.status == ContainerStatus.WAITING_SAVE:
                 if not free_saves:
@@ -228,7 +228,7 @@ class Dispatcher:
             idle_robots.remove(robot)
 
     def _handle_arrived_robots(self, free_saves):
-        """Обработать роботов, прибывших в пункт назначения."""
+        """Process robots that have arrived at their destination."""
         loaded_on_positions = {
             s.position for s in self.saves if s.status == SaveStatus.LOADED_ON
         }
@@ -241,7 +241,7 @@ class Dispatcher:
                 self._robot_arrived_at_storage(robot)
 
     def _robot_arrived_at_entry(self, robot, free_saves):
-        """Робот прибыл к контейнеру — отправить его в хранилище."""
+        """Robot reached the container — send it to storage."""
         save, path = self._closest_target(robot.position, free_saves,
                                           lambda s: s.position)
         if save and path:
@@ -251,7 +251,7 @@ class Dispatcher:
             self.containers = [c for c in self.containers if c.position != robot.position]
 
     def _robot_arrived_for_exit(self, robot):
-        """Робот прибыл в ячейку с командой на выход — отправить на выход."""
+        """Robot reached a cell with an exit command — send it to an exit."""
         exit_list = self.free_exits
         exit_pos, path = self._closest_target(robot.position, exit_list,
                                               lambda e: e)
@@ -263,7 +263,7 @@ class Dispatcher:
             self.containers = [c for c in self.containers if c.position != robot.position]
 
     def _robot_arrived_at_storage(self, robot):
-        """Робот прибыл в хранилище с контейнером — сдать контейнер."""
+        """Robot reached storage with a container — drop the container."""
         robot.task = RobotTask.IDLE
         save = self.saves_by_pos.get(robot.position)
         if save is not None:
@@ -271,7 +271,7 @@ class Dispatcher:
         self.containers.append(Container(robot.position, ContainerStatus.SAVED))
 
     def move_robots(self):
-        """Сдвинуть каждого робота на один шаг; считать доставленные контейнеры."""
+        """Advance each robot one step; count delivered containers."""
         for robot in self.robots:
             delivered = robot.move()
             if delivered:
@@ -279,14 +279,14 @@ class Dispatcher:
 
     def bfs_path(self, start: tuple, goal: tuple,
                  include_start: bool = False) -> Optional[list]:
-        """BFS-кратчайший путь от start до goal на текущей сетке."""
+        """BFS shortest path from start to goal on the current grid."""
         rows, cols = self.grid.m, self.grid.n
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
         queue = deque([start])
         visited = {start}
         parent = {start: None}
-        # Логическое состояние вместо визуальной матрицы:
-        # входы блокируют транзитное движение; контейнеры в ожидании блокируют клетку
+        # Logical state instead of the visual matrix:
+        # entries block transit movement; waiting containers block their cell
         entries_set = set(self.entries)
         blocked_positions = {
             c.position for c in self.containers
@@ -320,10 +320,10 @@ class Dispatcher:
 
         return None
 
-    # -- Вспомогательные методы ---------------------------------------------
+    # -- Helpers ------------------------------------------------------------
 
     def _closest_robot(self, candidates, target):
-        """Вернуть (робот, путь) для кандидата, ближайшего к target."""
+        """Return (robot, path) for the candidate closest to target."""
         best_robot, best_path, best_dist = None, None, float("inf")
         for robot in candidates:
             path = self.bfs_path(robot.position, target)
@@ -334,7 +334,7 @@ class Dispatcher:
         return best_robot, best_path
 
     def _closest_target(self, origin, targets, position_fn):
-        """Вернуть (цель, путь) для цели, ближайшей к origin."""
+        """Return (target, path) for the target closest to origin."""
         best_target, best_path, best_dist = None, None, float("inf")
         for t in targets:
             path = self.bfs_path(origin, position_fn(t))
@@ -346,7 +346,7 @@ class Dispatcher:
 
 
 class Simulator:
-    """Связывает сетку, роботов и диспетчер; запускает симуляцию."""
+    """Wires the grid, robots, and dispatcher together; runs the simulation."""
 
     def __init__(self, m: int, n: int, num_robots: int,
                  entries: int, exits: int, saves: int,
@@ -370,9 +370,9 @@ class Simulator:
         )
 
     def _init_random(self, m, n, num_robots, entries, exits, saves):
-        """Случайное размещение объектов на сетке."""
+        """Random object placement on the grid."""
         assert num_robots + entries + exits + saves < 0.8 * m * n, (
-            "Слишком много объектов на матрице: уменьшите их кол-во или увеличьте размер"
+            "Too many objects on the grid: reduce the count or increase the size"
         )
         self.entries = self._random_positions(entries, m, n)
         self.exits = self._random_positions(exits, m, n)
@@ -380,21 +380,21 @@ class Simulator:
                       for pos in self._random_positions(saves, m, n)]
 
     def _init_fixed(self, m, n, num_robots, entries, exits, saves, kwargs):
-        """Размещение объектов по заданным позициям."""
+        """Object placement at the given positions."""
         entries_arr = kwargs.get("entries_arr")
         exits_arr = kwargs.get("exits_arr")
         saves_arr = kwargs.get("saves_arr")
 
-        assert len(entries_arr) == entries, "Несогласованная генерация входных ячеек"
-        assert len(exits_arr) == exits,     "Несогласованная генерация выходных ячеек"
-        assert len(saves_arr) == saves,     "Несогласованная генерация ячеек хранения"
+        assert len(entries_arr) == entries, "Inconsistent entry-cell generation"
+        assert len(exits_arr) == exits,     "Inconsistent exit-cell generation"
+        assert len(saves_arr) == saves,     "Inconsistent storage-cell generation"
         assert (not set(saves_arr) & set(exits_arr)
                 and not set(entries_arr) & set(exits_arr)
                 and not set(saves_arr) & set(entries_arr)), (
-            "Позиции инициализации пересекаются"
+            "Initialization positions overlap"
         )
         assert num_robots + entries + exits + saves < 0.8 * m * n, (
-            "Слишком много объектов на матрице: уменьшите их кол-во или увеличьте размер"
+            "Too many objects on the grid: reduce the count or increase the size"
         )
 
         self.entries = entries_arr
@@ -403,7 +403,7 @@ class Simulator:
         self.unique_positions = set(saves_arr) | set(entries_arr) | set(exits_arr)
 
     def _random_positions(self, count: int, m: int, n: int) -> list:
-        """Сгенерировать count уникальных случайных позиций на сетке."""
+        """Generate `count` unique random positions on the grid."""
         available = [(i, j) for i in range(m) for j in range(n)
                      if (i, j) not in self.unique_positions]
         selected = self.rng.sample(available, count)
@@ -411,10 +411,10 @@ class Simulator:
         return selected
 
     def run(self, max_steps: int = 100_000):
-        """Запустить симуляцию до завершения (без анимации).
+        """Run the simulation to completion (no animation).
 
-        max_steps — защита от дедлока: если за это число шагов симуляция
-        не завершилась, возвращается текущий (высокий) результат метрики.
+        max_steps — deadlock guard: if the simulation does not finish within
+        this many steps, the current (high) metric value is returned.
         """
         while (self.dispatcher.containers_to_process > 0
                and self.dispatcher.resulting_metric < max_steps):
@@ -423,7 +423,7 @@ class Simulator:
         self.out = None
 
     def run_animated(self):
-        """Запустить симуляцию с анимацией matplotlib."""
+        """Run the simulation with a matplotlib animation."""
         from IPython.display import HTML
         self.grid.update(self.robots, self.dispatcher.containers,
                          self.entries, self.exits, self.saves)
@@ -435,20 +435,20 @@ class Simulator:
         plt.close(self.grid.fig)
         self.metric = self.dispatcher.resulting_metric
         if self.dispatcher.containers_to_process > 0:
-            print("Не хватило кол-ва кадров (frames) для обработки текущего кол-ва контейнеров")
+            print("Not enough animation frames to process all containers")
 
     def _tick(self, _=None):
-        """Колбэк анимации: выполнить один такт."""
+        """Animation callback: run one tick."""
         self.dispatcher.step(plot=True)
 
     def print_metric(self):
-        """Вывести итоговое количество шагов симуляции."""
-        print("Итоговое количество шагов:", self.dispatcher.resulting_metric)
+        """Print the final simulation step count."""
+        print("Total steps:", self.dispatcher.resulting_metric)
 
 
 def evaluate_configuration(args: tuple) -> int:
-    """Оценить конфигурацию склада через симуляцию. Вызывается из ProcessPoolExecutor.
-       Фиксированный seed обеспечивает воспроизводимость и честное сравнение геномов."""
+    """Evaluate a warehouse configuration via simulation. Called from ProcessPoolExecutor.
+       A fixed seed ensures reproducibility and fair comparison between genomes."""
     m, n, num_robots, entries_arr, exits_arr, saves_arr, containers_to_process, prob = args
     sim = Simulator(
         m, n, num_robots,
