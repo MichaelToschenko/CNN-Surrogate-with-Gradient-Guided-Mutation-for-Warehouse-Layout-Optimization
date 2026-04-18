@@ -209,15 +209,8 @@ def plot_convergence(
         ax.plot(gens, mean, color=color, lw=2, label=label)
         ax.fill_between(gens, mean - ci, mean + ci, alpha=0.2, color=color)
 
-    n_runs = max(len(ga_logs), len(cnn_logs))
-    ax.set_xlabel("Поколение", fontsize=13)
-    ax.set_ylabel("Лучший fitness (шагов симуляции)", fontsize=13)
-    ax.set_title(
-        f"Сходимость GA vs CNN-GA\n"
-        f"15×15, relocations={M_SWAPS}, pm={HARD_CASE['pm']}, "
-        f"mean ± 95% CI ({n_runs} прогонов)",
-        fontsize=13,
-    )
+    ax.set_xlabel("Generation", fontsize=13)
+    ax.set_ylabel("Best Fitness (simulation steps)", fontsize=13)
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -259,17 +252,11 @@ def plot_mean_fitness(
         linestyle="--",
         lw=1.5,
         alpha=0.8,
-        label=f"Конец накопления (ген. {n_accumulate})",
+        label=f"Accumulation end (gen. {n_accumulate})",
     )
 
-    n_runs = max(len(ga_logs), len(cnn_logs))
-    ax.set_xlabel("Поколение", fontsize=13)
-    ax.set_ylabel("Средний fitness популяции (шагов симуляции)", fontsize=13)
-    ax.set_title(
-        f"Средний fitness популяции: GA vs CNN-GA\n"
-        f"mean ± 95% CI ({n_runs} прогонов)",
-        fontsize=13,
-    )
+    ax.set_xlabel("Generation", fontsize=13)
+    ax.set_ylabel("Mean Population Fitness (simulation steps)", fontsize=13)
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -307,12 +294,8 @@ def plot_cnn_loss(
         epochs, mean - ci, mean + ci, alpha=0.25, color=COLOR_CNN,
     )
 
-    ax.set_xlabel("Эпоха", fontsize=13)
-    ax.set_ylabel("Loss (MSE, нормализованный)", fontsize=13)
-    ax.set_title(
-        f"Loss суррогата CNN-GA по эпохам\nmean ± 95% CI ({len(cnn_logs)} прогонов)",
-        fontsize=13,
-    )
+    ax.set_xlabel("Epoch", fontsize=13)
+    ax.set_ylabel("Loss (MSE, normalized)", fontsize=13)
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -350,14 +333,9 @@ def plot_surrogate_r2(
         trains, mean - ci, mean + ci, alpha=0.25, color=COLOR_CNN,
     )
 
-    ax.set_xlabel("Номер обучения/дообучения", fontsize=13)
+    ax.set_xlabel("Training / Fine-tuning Index", fontsize=13)
     ax.set_ylabel("R²", fontsize=13)
     ax.set_ylim(-0.1, 1.0)
-    ax.set_title(
-        f"R² суррогата CNN-GA\n"
-        f"mean ± 95% CI ({len(cnn_logs)} прогонов)",
-        fontsize=13,
-    )
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -417,12 +395,7 @@ def plot_final_boxplot(
             alpha=0.9,
         )
 
-    n_runs = max(len(d) for d in all_data)
-    ax.set_ylabel("Финальный fitness (шагов симуляции)", fontsize=13)
-    ax.set_title(
-        f"Финальный fitness: GA vs CNN-GA ({n_runs} прогонов)",
-        fontsize=13,
-    )
+    ax.set_ylabel("Final Fitness (simulation steps)", fontsize=13)
     ax.grid(True, axis="y", alpha=0.3)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
