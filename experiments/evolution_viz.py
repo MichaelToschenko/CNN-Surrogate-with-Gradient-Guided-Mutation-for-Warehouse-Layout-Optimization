@@ -86,7 +86,7 @@ def main() -> None:
     plots.plot_evolution(
         snapshots, gen_numbers,
         "plots/evolution_cnn_ga.png",
-        title="CNN-GA: Evolution of Best Warehouse Layout  (15×15)",
+        title="CNN-GA: Evolution of Best Warehouse Layout  (15x15)",
     )
     print("Done.")
 

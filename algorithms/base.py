@@ -25,10 +25,10 @@ class BaseGA:
     Base GA: a single evolution loop, shared operators, hooks for subclasses.
 
     Subclasses may override:
-      - _setup(executor)                              — after gen 0 evaluation
-      - _generate_children(pop, n_needed, executor)   — child generation
-      - _post_generation(gen, children, executor)     — after evaluating children
-      - _extra_log()                                  — extras for the final log
+      - _setup(executor)                              - after gen 0 evaluation
+      - _generate_children(pop, n_needed, executor)   - child generation
+      - _post_generation(gen, children, executor)     - after evaluating children
+      - _extra_log()                                  - extras for the final log
     """
 
     def __init__(

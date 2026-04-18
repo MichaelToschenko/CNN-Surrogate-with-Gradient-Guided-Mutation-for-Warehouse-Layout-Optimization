@@ -79,7 +79,7 @@ def plot_metrics_history(
 
     plt.subplot(1, 3, 3)
     plt.plot(gens, log["avg_s_to_ex"], marker="o")
-    plt.title("Average distance Save → nearest Entry/Exit")
+    plt.title("Average distance Save -> nearest Entry/Exit")
     plt.xlabel("Generation")
     plt.ylabel("Manhattan distance")
     plt.grid(True)
@@ -160,7 +160,7 @@ def plot_cnn_loss(cnn_logs: List[Dict], save_path: str) -> None:
     all_losses = [log.get("cnn_loss_per_epoch", []) for log in cnn_logs]
     max_epochs = max((len(l) for l in all_losses), default=0)
     if max_epochs == 0:
-        print("No CNN loss data — skipping plot.")
+        print("No CNN loss data - skipping plot.")
         return
 
     loss_arr = np.full((len(cnn_logs), max_epochs), np.nan)
@@ -184,11 +184,11 @@ def plot_cnn_loss(cnn_logs: List[Dict], save_path: str) -> None:
 
 
 def plot_surrogate_r2(cnn_logs: List[Dict], save_path: str) -> None:
-    """CNN-GA surrogate R² per training / fine-tuning."""
+    """CNN-GA surrogate R^2 per training / fine-tuning."""
     all_r2 = [log.get("surrogate_r2_per_train", []) for log in cnn_logs]
     max_len = max((len(r) for r in all_r2), default=0)
     if max_len == 0:
-        print("No CNN-GA surrogate R² data — skipping plot.")
+        print("No CNN-GA surrogate R^2 data - skipping plot.")
         return
 
     r2_arr = np.full((len(cnn_logs), max_len), np.nan)
@@ -199,10 +199,10 @@ def plot_surrogate_r2(cnn_logs: List[Dict], save_path: str) -> None:
     mean, ci = compute_mean_ci(r2_arr)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(trains, mean, color=COLOR_CNN, lw=2, marker="o", label="R²")
+    ax.plot(trains, mean, color=COLOR_CNN, lw=2, marker="o", label="R^2")
     ax.fill_between(trains, mean - ci, mean + ci, alpha=0.25, color=COLOR_CNN)
     ax.set_xlabel("Training / Fine-tuning Index", fontsize=13)
-    ax.set_ylabel("R²", fontsize=13)
+    ax.set_ylabel("R^2", fontsize=13)
     ax.set_ylim(-0.1, 1.0)
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
@@ -228,7 +228,7 @@ def plot_final_boxplot(
         colors.append(color)
 
     if not all_data:
-        print("No data for boxplot — skipping.")
+        print("No data for boxplot - skipping.")
         return
 
     fig, ax = plt.subplots(figsize=(8, 6))

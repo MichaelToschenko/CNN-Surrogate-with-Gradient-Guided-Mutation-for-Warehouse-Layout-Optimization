@@ -3,7 +3,7 @@
 from typing import Any, Dict, List
 
 
-# Hard 15×15 case for a fair GA vs CNN-GA comparison
+# Hard 15x15 case for a fair GA vs CNN-GA comparison
 HARD_CASE: Dict[str, Any] = dict(
     m=15, n=15,
     entries=5, exits=5, saves=30,

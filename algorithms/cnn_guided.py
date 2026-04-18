@@ -120,10 +120,10 @@ class CNNGuidedGA(BaseGA):
         Gradient-guided relocation of cells onto ROAD positions.
 
         For each of m_swaps steps:
-          1. Backward pass through the surrogate → gradient (4, m, n)
+          1. Backward pass through the surrogate -> gradient (4, m, n)
           2. For each non-road cell and each road position,
-             score = (grad[ch, old] − grad[ch, new]) + (grad[road, new] − grad[road, old])
-          3. Top-N candidates → verification via a batched forward pass
+             score = (grad[ch, old] - grad[ch, new]) + (grad[road, new] - grad[road, old])
+          3. Top-N candidates -> verification via a batched forward pass
           4. Apply the best move
         """
         n_applied = 0
@@ -199,7 +199,7 @@ class CNNGuidedGA(BaseGA):
     # -- Adaptive mutation: overrides BaseGA._mutate -----------------------
 
     def _mutate(self, individual: Individual) -> None:
-        """If the surrogate is trained — gradient relocation. Otherwise — base random relocate."""
+        """If the surrogate is trained - gradient relocation. Otherwise - base random relocate."""
         if self.surrogate_trained:
             self._mutate_relocate(individual)
         else:
@@ -208,7 +208,7 @@ class CNNGuidedGA(BaseGA):
     # -- Surrogate training -------------------------------------------------
 
     def _augment_buffer(self, data: list) -> list:
-        """×4 augmentation via symmetries (H-flip, V-flip, HV-flip)."""
+        """x4 augmentation via symmetries (H-flip, V-flip, HV-flip)."""
         augmented = list(data)
         for grid_enc, fitness in data:
             for hflip, vflip in [(True, False), (False, True), (True, True)]:
@@ -221,7 +221,7 @@ class CNNGuidedGA(BaseGA):
         return augmented
 
     def _train_surrogate(self) -> Tuple[List[float], float]:
-        """Train/fine-tune the surrogate on the buffer. Returns (epoch_losses, r²)."""
+        """Train/fine-tune the surrogate on the buffer. Returns (epoch_losses, r^2)."""
         if len(self.buffer) < self.min_buffer_size:
             return [], 0.0
 

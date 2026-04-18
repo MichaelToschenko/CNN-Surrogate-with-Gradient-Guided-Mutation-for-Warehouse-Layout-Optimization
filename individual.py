@@ -116,7 +116,7 @@ class Individual:
 
         # subtitle with dimensions and cell counts
         counts = self.count_types()
-        subtitle = (f"{self.m}×{self.n}  |  "
+        subtitle = (f"{self.m}x{self.n}  |  "
                     f"Entries: {counts[ENTRY]}, "
                     f"Exits: {counts[EXIT]}, "
                     f"Storage: {counts[SAVE]}")

@@ -9,7 +9,7 @@ from individual import Individual
 def random_relocate_mutation(
     individual: Individual, k: int, rng: random.Random,
 ) -> None:
-    """K random relocations: a non-road cell → a ROAD position."""
+    """K random relocations: a non-road cell -> a ROAD position."""
     for _ in range(k):
         non_road = [tuple(p) for p in np.argwhere(individual.grid != ROAD)]
         road_pos = [tuple(p) for p in np.argwhere(individual.grid == ROAD)]

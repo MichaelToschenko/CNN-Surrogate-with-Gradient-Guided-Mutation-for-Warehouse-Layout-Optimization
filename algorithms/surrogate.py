@@ -11,7 +11,7 @@ CELL_TYPES: List[str] = [ROAD, ENTRY, EXIT, SAVE]
 
 
 def encode_grid(grid: np.ndarray, m: int, n: int) -> torch.Tensor:
-    """One-hot 4-channel encoding: (m, n) → (1, 4, m, n) float32."""
+    """One-hot 4-channel encoding: (m, n) -> (1, 4, m, n) float32."""
     encoded = np.zeros((4, m, n), dtype=np.float32)
     for ch, ct in enumerate(CELL_TYPES):
         encoded[ch] = (grid == ct).astype(np.float32)
@@ -20,18 +20,18 @@ def encode_grid(grid: np.ndarray, m: int, n: int) -> torch.Tensor:
 
 class FitnessSurrogate(nn.Module):
     """
-    CNN surrogate: (B, 4, m, n) → (B,) scalar fitness.
+    CNN surrogate: (B, 4, m, n) -> (B,) scalar fitness.
 
     4-channel input (ROAD, ENTRY, EXIT, SAVE).
-    Dilated convolutions expand the receptive field to 17×17 — covers 15×15.
+    Dilated convolutions expand the receptive field to 17x17 - covers 15x15.
 
-    Architecture — per-cell scoring + sum:
-        Conv(4→32,  3×3, d=1) + BN + ReLU + Drop    RF:  3
-        Conv(32→32, 3×3, d=1) + BN + ReLU + Drop    RF:  5
-        Conv(32→16, 3×3, d=2) + BN + ReLU + Drop    RF:  9
-        Conv(16→8,  3×3, d=4) + BN + ReLU           RF: 17
-        Per-cell head: Conv(8→16, 1×1) + ReLU + Conv(16→1, 1×1)
-        SUM over spatial dims → scalar fitness (B,)
+    Architecture - per-cell scoring + sum:
+        Conv(4->32,  3x3, d=1) + BN + ReLU + Drop    RF:  3
+        Conv(32->32, 3x3, d=1) + BN + ReLU + Drop    RF:  5
+        Conv(32->16, 3x3, d=2) + BN + ReLU + Drop    RF:  9
+        Conv(16->8,  3x3, d=4) + BN + ReLU           RF: 17
+        Per-cell head: Conv(8->16, 1x1) + ReLU + Conv(16->1, 1x1)
+        SUM over spatial dims -> scalar fitness (B,)
 
     No global pooling: each cell's gradient is its direct contribution.
     ~15 000 parameters.

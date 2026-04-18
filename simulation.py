@@ -241,7 +241,7 @@ class Dispatcher:
                 self._robot_arrived_at_storage(robot)
 
     def _robot_arrived_at_entry(self, robot, free_saves):
-        """Robot reached the container — send it to storage."""
+        """Robot reached the container - send it to storage."""
         save, path = self._closest_target(robot.position, free_saves,
                                           lambda s: s.position)
         if save and path:
@@ -251,7 +251,7 @@ class Dispatcher:
             self.containers = [c for c in self.containers if c.position != robot.position]
 
     def _robot_arrived_for_exit(self, robot):
-        """Robot reached a cell with an exit command — send it to an exit."""
+        """Robot reached a cell with an exit command - send it to an exit."""
         exit_list = self.free_exits
         exit_pos, path = self._closest_target(robot.position, exit_list,
                                               lambda e: e)
@@ -263,7 +263,7 @@ class Dispatcher:
             self.containers = [c for c in self.containers if c.position != robot.position]
 
     def _robot_arrived_at_storage(self, robot):
-        """Robot reached storage with a container — drop the container."""
+        """Robot reached storage with a container - drop the container."""
         robot.task = RobotTask.IDLE
         save = self.saves_by_pos.get(robot.position)
         if save is not None:
@@ -413,7 +413,7 @@ class Simulator:
     def run(self, max_steps: int = 100_000):
         """Run the simulation to completion (no animation).
 
-        max_steps — deadlock guard: if the simulation does not finish within
+        max_steps - deadlock guard: if the simulation does not finish within
         this many steps, the current (high) metric value is returned.
         """
         while (self.dispatcher.containers_to_process > 0
