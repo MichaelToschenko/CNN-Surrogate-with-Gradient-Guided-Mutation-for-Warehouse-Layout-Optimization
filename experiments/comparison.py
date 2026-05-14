@@ -1,19 +1,23 @@
+"""GA vs CNN-GA comparison on SEEDS_10 - main paper experiment."""
+
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import matplotlib
 matplotlib.use("Agg")
 
 import numpy as np
+from scipy.stats import ttest_rel
 
 from algorithms import CNNGuidedGA, GeneticAlgorithm
 from algorithms.mutations import random_relocate_mutation
 from experiments import plots
-from experiments.cases import CNN_PARAMS, HARD_CASE, M_SWAPS, SEEDS
+from experiments.cases import CNN_PARAMS, HARD_CASE, M_SWAPS, SEEDS_10
 
 
-N_RUNS = len(SEEDS)
+LOGS_DIR = "logs"
+PLOTS_DIR = "plots"
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +40,7 @@ def print_separator(title: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Runs
+# Runners
 # ---------------------------------------------------------------------------
 
 def run_ga(seed: int) -> Dict[str, Any]:
@@ -60,19 +64,23 @@ def run_cnn_ga(seed: int) -> Dict[str, Any]:
     return log
 
 
-def run_or_load(name: str, runner, log_dir: str) -> List[Dict[str, Any]]:
-    """Run N seeds or load logs from disk."""
+def run_or_load(
+    name: str, runner: Callable[[int], Dict[str, Any]],
+    seeds: List[int] = SEEDS_10, log_dir: str = LOGS_DIR,
+) -> List[Dict[str, Any]]:
+    """Run all seeds for an algorithm or load cached logs from disk."""
     logs: List[Dict[str, Any]] = []
-    for i, seed in enumerate(SEEDS):
+    total = len(seeds)
+    for i, seed in enumerate(seeds):
         log_path = f"{log_dir}/run_{name}_{seed}.json"
         if os.path.exists(log_path):
             print_separator(
-                f"{name.upper()} run {i + 1}/{N_RUNS} | seed={seed} [from disk]"
+                f"{name.upper()} run {i + 1}/{total} | seed={seed} [from disk]"
             )
             log = load_log(log_path)
             print(f"  Loaded: {log_path} (best={log['best_fitness_per_gen'][-1]})")
         else:
-            print_separator(f"{name.upper()} run {i + 1}/{N_RUNS} | seed={seed}")
+            print_separator(f"{name.upper()} run {i + 1}/{total} | seed={seed}")
             log = runner(seed)
             save_log(log, log_path)
             print(f"  Log saved: {log_path}")
@@ -82,36 +90,64 @@ def run_or_load(name: str, runner, log_dir: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Statistics
+# ---------------------------------------------------------------------------
+
+def report_finals(name: str, logs: List[Dict[str, Any]]) -> List[float]:
+    if not logs:
+        print(f"{name}: no data")
+        return []
+    finals = [log["best_fitness_per_gen"][-1] for log in logs]
+    arr = np.array(finals, dtype=float)
+    print(f"{name}: {finals}")
+    print(
+        f"  mean={arr.mean():.2f}, std={arr.std(ddof=1):.2f}, "
+        f"median={np.median(arr):.1f}, min={arr.min():.0f}, max={arr.max():.0f}"
+    )
+    return finals
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    os.makedirs("logs", exist_ok=True)
-    os.makedirs("plots", exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    os.makedirs(PLOTS_DIR, exist_ok=True)
 
-    ga_logs = run_or_load("ga", run_ga, "logs")
-    cnn_logs = run_or_load("cnn_ga", run_cnn_ga, "logs")
+    ga_logs = run_or_load("ga", run_ga)
+    cnn_logs = run_or_load("cnn_ga", run_cnn_ga)
 
-    print_separator("Final statistics")
-    for name, logs in [("GA     ", ga_logs), ("CNN-GA ", cnn_logs)]:
-        if not logs:
-            print(f"{name}: no data")
-            continue
-        finals = [log["best_fitness_per_gen"][-1] for log in logs]
-        print(f"{name}: {finals}")
-        print(f"         mean={np.mean(finals):.1f}, std={np.std(finals):.1f}")
+    print_separator("Final statistics (10 seeds)")
+    ga_finals = report_finals("GA    ", ga_logs)
+    cnn_finals = report_finals("CNN-GA", cnn_logs)
+
+    if ga_finals and cnn_finals:
+        t_stat, p_val = ttest_rel(ga_finals, cnn_finals)
+        gain = 100 * (np.mean(ga_finals) - np.mean(cnn_finals)) / np.mean(ga_finals)
+        print(
+            f"\nPaired t-test GA vs CNN-GA (n={len(ga_finals)}): "
+            f"t={t_stat:.3f}, p={p_val:.4g}, df={len(ga_finals) - 1}, "
+            f"gain={gain:+.2f}%"
+        )
 
     print_separator("Building plots")
     gens = HARD_CASE["generations"]
     n_acc = CNN_PARAMS["n_accumulate"]
 
-    plots.plot_convergence(ga_logs, cnn_logs, gens, "plots/convergence.png")
-    plots.plot_mean_fitness(ga_logs, cnn_logs, gens, n_acc, "plots/mean_fitness.png")
-    plots.plot_cnn_loss(cnn_logs, "plots/cnn_loss.png")
-    plots.plot_surrogate_r2(cnn_logs, "plots/cnn_surrogate_r2.png")
-    plots.plot_final_boxplot(ga_logs, cnn_logs, "plots/final_fitness_boxplot.png")
+    plots.plot_convergence(
+        ga_logs, cnn_logs, gens, f"{PLOTS_DIR}/convergence.png",
+    )
+    plots.plot_mean_fitness(
+        ga_logs, cnn_logs, gens, n_acc, f"{PLOTS_DIR}/mean_fitness.png",
+    )
+    plots.plot_cnn_loss(cnn_logs, f"{PLOTS_DIR}/cnn_loss.png")
+    plots.plot_surrogate_r2(cnn_logs, f"{PLOTS_DIR}/cnn_surrogate_r2.png")
+    plots.plot_final_boxplot(
+        ga_logs, cnn_logs, f"{PLOTS_DIR}/final_fitness_boxplot.png",
+    )
 
-    print("\nExperiment finished successfully.")
+    print("\nComparison experiment finished successfully.")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 # CNN Surrogate with Gradient-Guided Mutation for Warehouse Layout Optimization
 
+> Accepted to **ICRAS 2026**. The numbers below correspond to the camera-ready revision (10 seeds + ablation study).
+
 This project addresses the problem of optimal placement of entry points, exits, and storage zones on the rectangular grid of an automated warehouse. The quality of a configuration is measured by the number of discrete-event simulation steps required to process a fixed number of containers by mobile robots. Two algorithms are implemented: a baseline genetic algorithm (**GA**) and its modification (**CNN-GA**), in which a convolutional neural network acts as a surrogate for the fitness function - both for candidate selection and as a source of gradient for guided mutation.
 
 ## Optimization process
@@ -37,14 +39,15 @@ pip install -r requirements.txt
 
 ## Running
 
-Two entry points (from the project root):
+Three entry points (from the project root):
 
 ```bash
-python -m experiments.comparison      # GA vs CNN-GA, 5 seeds, all plots saved to plots/
+python -m experiments.comparison      # GA vs CNN-GA, 10 seeds - main paper figures (convergence.png, mean_fitness.png, ...)
+python -m experiments.ablation        # Adds two CNN-GA modifications (PreOnly, GradOnly) on the same 10 seeds and produces *_ablation.png
 python -m experiments.evolution_viz   # Strip of best-layout snapshots over generations
 ```
 
-Both scripts reuse cached logs from `logs/`. To force a fresh run, delete the corresponding `logs/run_*.json` file.
+Both `comparison` and `ablation` run on the same `SEEDS_10` set and share the same GA/CNN-GA logs in `logs/` (`ablation` reuses them, only the two ablation-specific runs are added). All scripts reuse cached logs - to force a fresh run, delete the corresponding `run_*.json` file.
 
 Interactive example:
 
@@ -62,33 +65,33 @@ best_config.plot()
 
 ## Results
 
-**Experiment conditions:** 15×15 grid, 5 entries / 5 exits / 30 storage cells, 12 robots, 160 containers, `p=0.35`. Evolution parameters: `N=50`, `G=80`. 5 runs with seeds `{42, 123, 456, 789, 1337}`.
+**Experiment conditions:** 15×15 grid, 5 entries / 5 exits / 30 storage cells, 12 robots, 160 containers, `p=0.35`. Evolution parameters: `N=50`, `G=80`. 10 runs with seeds `{42, 123, 456, 789, 1337, 2024, 31337, 9001, 271828, 161803}`.
 
 ### Convergence
 
 ![Best-fitness convergence](plots/convergence.png)
 
-Best fitness per generation (mean ± 95% CI, 5 runs). CNN-GA consistently outperforms GA after the surrogate is activated at generation 5; the confidence intervals of the two algorithms barely overlap across the plateau.
+Best fitness per generation (mean ± 95% CI, 10 runs). CNN-GA consistently outperforms GA after the surrogate is activated at generation 5; the confidence intervals of the two algorithms dont overlap across the plateau.
 
 ### Generations to reach a threshold
 
-Number of generations at which the algorithm first reached the given fitness threshold (mean over runs that reached it; in parentheses - fraction of such runs out of 5).
+Number of generations at which the algorithm first reached the given fitness threshold (mean over runs that reached it; in parentheses - fraction of such runs out of 10).
 
-| Threshold | GA        | CNN-GA    |
-|-----------|-----------|-----------|
-| ≤210      | 2 (5/5)   | 2 (5/5)   |
-| ≤200      | 3 (5/5)   | 4 (5/5)   |
-| ≤190      | 6 (5/5)   | 5 (5/5)   |
-| ≤180      | 7 (5/5)   | 6 (5/5)   |
-| ≤170      | 14 (5/5)  | 10 (5/5)  |
-| ≤165      | 18 (5/5)  | 11 (5/5)  |
-| ≤160      | 20 (3/5)  | 12 (5/5)  |
-| ≤155      | 24 (2/5)  | 16 (5/5)  |
-| ≤150      | 36 (1/5)  | 23 (3/5)  |
-| ≤145      | - (0/5)   | 35 (3/5)  |
-| ≤140      | - (0/5)   | 34 (1/5)  |
+| Threshold | GA          | CNN-GA      |
+|-----------|-------------|-------------|
+| ≤210      | 1.8 (10/10) | 1.6 (10/10) |
+| ≤200      | 3.7 (10/10) | 3.5 (10/10) |
+| ≤190      | 6.2 (10/10) | 5.1 (10/10) |
+| ≤180      | 8.8 (10/10) | 6.5 (10/10) |
+| ≤170      | 13.8 (10/10)| 8.9 (10/10) |
+| ≤165      | 19.4 (10/10)| 10.6 (10/10)|
+| ≤160      | 26.2 (8/10) | 12.5 (10/10)|
+| ≤155      | 34.0 (3/10) | 15.7 (10/10)|
+| ≤150      | 36.0 (1/10) | 22.8 (8/10) |
+| ≤145      | - (0/10)    | 32.3 (6/10) |
+| ≤140      | - (0/10)    | 34.0 (1/10) |
 
-On loose thresholds the difference is small; starting from ≤170 CNN-GA systematically reaches each level 3-12 generations earlier than GA, and the tight thresholds ≤145 and ≤140 are not reached by GA in any run.
+On loose thresholds the difference is small; starting from ≤170 CNN-GA systematically reaches each level 5-18 generations earlier than GA, and the tight thresholds ≤145 and ≤140 are not reached by GA in any run.
 
 ### Mean population fitness
 
@@ -100,7 +103,13 @@ The gap between the algorithms widens immediately after surrogate activation and
 
 ![Final-fitness distribution](plots/final_fitness_boxplot.png)
 
-Distribution of final values across 5 runs. GA median - 157, CNN-GA median - 144. Paired t-test: `t=6.076`, `p=0.0037`, `df=4` - a statistically significant ~8% advantage of CNN-GA.
+Distribution of final values across 10 runs. GA median - 157.5, CNN-GA median - 144.5. Paired t-test: `t=10.328`, `p=2.7×10⁻⁶`, `df=9` - a statistically significant 8.05% advantage of CNN-GA.
+
+### Ablation study
+
+![Ablation: mean population fitness](plots/mean_fitness_ablation.png)
+
+Isolating the contribution of each surrogate-driven component over 10 runs reveals a clear picture. Aggressive intensification by the surrogate filter collapses population diversity, and random relocation mutation cannot escape the resulting local optima- visible as the early-flattening green curve above. **Gradient-guided mutation alone matches the full CNN-GA**, identifying it as the dominant source of the improvement. Pre-screening is retained in the final model because it adds no simulation-budget cost and provides an independent fallback during the first generations after surrogate activation, when R² is still unstable.
 
 ### Surrogate quality
 
@@ -112,13 +121,13 @@ Coefficient of determination `R²` of the surrogate across fine-tuning cycles. A
 
 ```
 .
-|-- algorithms/       # GA, CNN-GA, surrogate, mutation operators
-|-- experiments/      # comparison.py, evolution_viz.py, cases.py, plots.py
-|-- simulation.py     # discrete-event warehouse simulator
-|-- individual.py     # configuration genome
-|-- metrics.py        # spatial metrics
-|-- constants.py      # cell-type and state enums
-|-- plots/            # generated plots (png)
-|-- logs/             # cached run logs (json)
+|-- algorithms/         # GA, CNN-GA, surrogate, mutation operators
+|-- experiments/        # comparison.py, ablation.py, evolution_viz.py, cases.py, plots.py
+|-- simulation.py       # discrete-event warehouse simulator
+|-- individual.py       # configuration genome
+|-- metrics.py          # spatial metrics
+|-- constants.py        # cell-type and state enums
+|-- plots/              # generated figures (png)
+|-- logs/               # cached run logs (json)
 \-- requirements.txt
 ```
