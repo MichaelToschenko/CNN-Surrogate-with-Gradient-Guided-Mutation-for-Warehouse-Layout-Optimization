@@ -12,6 +12,8 @@ from individual import Individual
 
 COLOR_GA = "steelblue"
 COLOR_CNN = "tomato"
+COLOR_PRE_ONLY = "seagreen"
+COLOR_GRAD_ONLY = "goldenrod"
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +132,27 @@ def plot_convergence(
     print(f"Saved: {save_path}")
 
 
+def plot_convergence_multi(
+    series: List[Tuple[str, str, List[Dict]]],
+    generations: int, save_path: str,
+) -> None:
+    """Convergence (best fitness) with CI for N algorithms. series: (label, color, logs)."""
+    gens = list(range(generations + 1))
+    fig, ax = plt.subplots(figsize=(10, 6))
+    _plot_with_ci(
+        ax, gens,
+        [(label, color, logs, "best_fitness_per_gen") for label, color, logs in series],
+    )
+    ax.set_xlabel("Generation", fontsize=13)
+    ax.set_ylabel("Best Fitness (simulation steps)", fontsize=13)
+    ax.legend(fontsize=12)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"Saved: {save_path}")
+
+
 def plot_mean_fitness(
     ga_logs: List[Dict], cnn_logs: List[Dict],
     generations: int, n_accumulate: int, save_path: str,
@@ -141,6 +164,31 @@ def plot_mean_fitness(
         ("GA", COLOR_GA, ga_logs, "mean_fitness_per_gen"),
         ("CNN-GA", COLOR_CNN, cnn_logs, "mean_fitness_per_gen"),
     ])
+    ax.axvline(
+        x=n_accumulate, color="gray", linestyle="--", lw=1.5, alpha=0.8,
+        label=f"Accumulation end (gen. {n_accumulate})",
+    )
+    ax.set_xlabel("Generation", fontsize=13)
+    ax.set_ylabel("Mean Population Fitness (simulation steps)", fontsize=13)
+    ax.legend(fontsize=12)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"Saved: {save_path}")
+
+
+def plot_mean_fitness_multi(
+    series: List[Tuple[str, str, List[Dict]]],
+    generations: int, n_accumulate: int, save_path: str,
+) -> None:
+    """Mean population fitness with CI for N algorithms. series: (label, color, logs)."""
+    gens = list(range(generations + 1))
+    fig, ax = plt.subplots(figsize=(10, 6))
+    _plot_with_ci(
+        ax, gens,
+        [(label, color, logs, "mean_fitness_per_gen") for label, color, logs in series],
+    )
     ax.axvline(
         x=n_accumulate, color="gray", linestyle="--", lw=1.5, alpha=0.8,
         label=f"Accumulation end (gen. {n_accumulate})",
@@ -172,11 +220,15 @@ def plot_cnn_loss(cnn_logs: List[Dict], save_path: str) -> None:
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(epochs, mean, color=COLOR_CNN, lw=2, label="CNN-GA loss (MSE)")
-    ax.fill_between(epochs, mean - ci, mean + ci, alpha=0.25, color=COLOR_CNN)
+    floor = max(np.nanmin(mean) * 0.5, 1e-6)
+    lower = np.clip(mean - ci, a_min=floor, a_max=None)
+    ax.fill_between(epochs, lower, mean + ci, alpha=0.25, color=COLOR_CNN)
+    ax.set_yscale("log")
+    ax.set_ylim(bottom=floor)
     ax.set_xlabel("Epoch", fontsize=13)
-    ax.set_ylabel("Loss (MSE, normalized)", fontsize=13)
+    ax.set_ylabel("Loss (MSE, normalized, log scale)", fontsize=13)
     ax.legend(fontsize=12)
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
@@ -263,13 +315,20 @@ def plot_evolution(
     gen_numbers: List[int],
     save_path: str,
     title: str = "CNN-GA: Evolution of Best Warehouse Layout",
+    n_rows: int = 1,
 ) -> None:
-    n_cols = len(snapshots)
-    fig, axes = plt.subplots(1, n_cols, figsize=(3.8 * n_cols, 4.5))
-    if n_cols == 1:
-        axes = [axes]
+    n_panels = len(snapshots)
+    n_cols = (n_panels + n_rows - 1) // n_rows
 
-    for ax, ind, gen in zip(axes, snapshots, gen_numbers):
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(3.8 * n_cols, 4.5 * n_rows),
+    )
+    if n_panels == 1:
+        axes_flat = [axes]
+    else:
+        axes_flat = np.atleast_1d(axes).flatten().tolist()
+
+    for ax, ind, gen in zip(axes_flat, snapshots, gen_numbers):
         numeric = np.vectorize(CONFIG_CELL_TO_IDX.get)(ind.grid)
         ax.pcolormesh(
             numeric, cmap=CONFIG_CMAP, vmin=0, vmax=3,
@@ -284,6 +343,9 @@ def plot_evolution(
         ax.set_title(f"Generation {gen}", fontsize=12, pad=6)
         ax.set_xlabel(f"Fitness: {ind.fitness}", fontsize=10, labelpad=4)
 
+    for ax in axes_flat[n_panels:]:
+        ax.axis("off")
+
     legend_patches = [
         mpatches.Patch(color=CONFIG_COLORS[ROAD], label="Road"),
         mpatches.Patch(color=CONFIG_COLORS[ENTRY], label="Entry"),
@@ -292,12 +354,12 @@ def plot_evolution(
     ]
     fig.legend(
         handles=legend_patches, loc="lower center",
-        ncol=4, fontsize=10, frameon=True, bbox_to_anchor=(0.5, -0.08),
+        ncol=4, fontsize=10, frameon=True, bbox_to_anchor=(0.5, -0.04),
     )
-    fig.suptitle(title, fontsize=13, y=1.02)
+    fig.suptitle(title, fontsize=13, y=1.0)
 
     plt.tight_layout()
-    plt.subplots_adjust(bottom=0.12)
+    plt.subplots_adjust(bottom=0.08 if n_rows > 1 else 0.12)
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {save_path}")

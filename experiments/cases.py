@@ -28,6 +28,10 @@ VIZ_CASE: Dict[str, Any] = dict(
 # Seeds for reproducible runs
 SEEDS: List[int] = [42, 123, 456, 789, 1337]
 
+# Extended set of 10 seeds for the ICRAS 2026 revision (5 original + 5 new).
+# Reusing the first 5 lets us reuse cached logs from the original comparison.
+SEEDS_10: List[int] = SEEDS + [2024, 31337, 9001, 271828, 161803]
+
 # Relocation operator parameter: number of relocations per mutation
 M_SWAPS: int = 4
 

@@ -1,3 +1,4 @@
 .diploma_venv/
 __pycache__/
 logs/
+logs_10seeds/

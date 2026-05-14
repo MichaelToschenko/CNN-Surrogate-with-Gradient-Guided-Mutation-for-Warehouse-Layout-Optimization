@@ -42,6 +42,8 @@ class CNNGuidedGA(BaseGA):
         min_r2: float = 0.1,
         oversample_factor: int = 3,
         warmstart_extra: int = 50,
+        use_prescreening: bool = True,
+        use_grad_mutation: bool = True,
         rng_seed: int = 42,
         n_jobs: int = -1,
     ) -> None:
@@ -76,6 +78,8 @@ class CNNGuidedGA(BaseGA):
         self.min_r2 = min_r2
         self.oversample_factor = oversample_factor
         self.warmstart_extra = warmstart_extra
+        self.use_prescreening = use_prescreening
+        self.use_grad_mutation = use_grad_mutation
 
         # CNN surrogate
         self.surrogate = FitnessSurrogate(m, n)
@@ -200,7 +204,7 @@ class CNNGuidedGA(BaseGA):
 
     def _mutate(self, individual: Individual) -> None:
         """If the surrogate is trained - gradient relocation. Otherwise - base random relocate."""
-        if self.surrogate_trained:
+        if self.surrogate_trained and self.use_grad_mutation:
             self._mutate_relocate(individual)
         else:
             super()._mutate(individual)
@@ -307,7 +311,7 @@ class CNNGuidedGA(BaseGA):
         executor: ProcessPoolExecutor,
     ) -> List[Individual]:
         """Oversample + surrogate filter when the surrogate is active."""
-        use_surrogate = self.surrogate_trained
+        use_surrogate = self.surrogate_trained and self.use_prescreening
         n_generate = n_needed * self.oversample_factor if use_surrogate else n_needed
 
         all_children: List[Individual] = []
